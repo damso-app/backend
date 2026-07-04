@@ -22,8 +22,54 @@
 ## Auth
 
 - `GET /api/v1/auth/kakao/login-url`: 카카오 로그인 진입 URL 발급.
-- `POST /api/v1/auth/kakao/callback`: 카카오 OAuth callback 처리.
+- `GET /api/v1/auth/kakao/callback`: 카카오 OAuth callback 수신.
 - `POST /api/v1/auth/logout`: 현재 세션 또는 토큰 종료.
+
+### `GET /api/v1/auth/kakao/login-url`
+
+Kakao authorize URL을 생성한다.
+
+응답:
+
+```json
+{
+  "loginUrl": "https://kauth.kakao.com/oauth/authorize?client_id=...&redirect_uri=...&response_type=code&state=...",
+  "state": "generated-state"
+}
+```
+
+현재 `state`는 URL과 응답에 포함하지만 서버 저장/검증은 아직 구현하지 않는다. 다음 단계에서 server-side state 저장과 callback 검증을 붙인다.
+
+### `GET /api/v1/auth/kakao/callback`
+
+Kakao OAuth callback을 수신한다.
+
+Query parameters:
+
+- `code`: Kakao authorization code. 필수.
+- `state`: login-url에서 생성한 state. 현재는 수신만 하고 검증은 TODO.
+
+응답:
+
+```json
+{
+  "status": "received",
+  "state": "generated-state"
+}
+```
+
+`code`가 없으면 `400`을 반환한다. 이 엔드포인트는 아직 Kakao token API 호출, userinfo 조회, Damso access token 발급, DB 조회/저장을 수행하지 않는다. Kakao access token은 프론트에 반환하지 않으며, access token을 URL query로 전달하지 않는다. 다음 단계에서 `KakaoAuthService`와 `login_code` 교환 흐름을 붙인다.
+
+### Kakao Login 설정
+
+사용할 환경변수:
+
+- `KAKAO_REST_API_KEY`: Kakao Developers REST API key.
+- `KAKAO_CLIENT_SECRET`: Kakao client secret.
+- `KAKAO_REDIRECT_URI`: Kakao Developers에 등록할 백엔드 callback URI.
+- `FRONTEND_OAUTH_CALLBACK_URL`: 백엔드 callback 처리 후 프론트로 이동할 OAuth callback URL.
+
+백엔드는 Kakao authorization code를 callback으로 받은 뒤 Kakao token/userinfo API를 서버에서 호출한다. Kakao access token은 프론트에 전달하지 않고, 최종 Damso access token 전달은 URL query 직접 전달 대신 `login_code` 교환 방식을 우선 고려한다.
 
 ## Users
 
@@ -63,5 +109,3 @@
 - `POST /api/v1/memoirs`: 회고록 생성 요청.
 - `GET /api/v1/memoirs`: 회고록 목록 조회.
 - `GET /api/v1/memoirs/{memoir_id}`: 회고록 상세 조회.
-ruff check .
-
