@@ -1,5 +1,56 @@
 # Prompt Log
 
+## 2026-07-05 Kakao Profile Image 저장 반영
+
+### 요청 프롬프트 요약
+
+Damso 백엔드의 Kakao 로그인에서 Kakao userinfo의 profile image를 Damso 사용자 정보에 저장하도록 요청했다. `kakao_account.profile.profile_image_url`을 우선 사용하고, 없으면 `thumbnail_image_url`을 fallback으로 쓰며, 둘 다 없어도 로그인은 실패하지 않게 nullable로 처리한다. 신규 유저는 `users.profile_image_url`에 저장하고, 기존 유저는 값이 비어 있을 때만 채우며 이미 있으면 덮어쓰지 않는다.
+
+### 생성/수정 파일
+
+- `app/services/kakao_auth_service.py`
+- `app/services/kakao_login_service.py`
+- `app/models/user.py`
+- `alembic/versions/20260705_0003_add_user_profile_image_url.py`
+- `tests/test_kakao_auth_service.py`
+- `tests/test_kakao_login_service.py`
+- `tests/test_models.py`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/ERD.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- Kakao userinfo 파싱에서 `profile_image_url`을 우선 읽고, 값이 없으면 `thumbnail_image_url`을 fallback으로 사용한다.
+- `users.profile_image_url` nullable `TEXT` 컬럼을 추가했다.
+- 신규 Kakao 로그인 사용자는 `users.profile_image_url`에 Kakao profile image URL을 저장한다.
+- 기존 사용자는 `users.profile_image_url`이 비어 있을 때만 새 Kakao profile image URL로 채운다.
+- 기존 값이 이미 있으면 MVP 정책상 덮어쓰지 않는다.
+- Kakao access token 전달/저장 정책과 `.env`는 변경하지 않았다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest
+# 42 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260705_0003 (head)
+
+.venv/bin/alembic upgrade head
+# Running upgrade 20260705_0002 -> 20260705_0003, add user profile image url
+```
+
+첫 `alembic upgrade head`는 sandbox DNS 제한으로 Supabase host를 해석하지 못해 실패했고, 네트워크 접근 권한으로 재실행해 성공했다. 실제 `DATABASE_URL`과 비밀번호는 기록하지 않았다.
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-05 인증/온보딩 MVP 초기 DB 모델과 Migration 구현
 
 ### 요청 프롬프트 요약

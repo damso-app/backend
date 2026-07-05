@@ -11,7 +11,7 @@
 
 인증/온보딩 MVP의 초기 DB 모델은 다음 테이블을 기준으로 한다.
 
-- `users`: Damso 내부 사용자. 외부 노출에는 내부 `id` 대신 `public_id`를 사용한다.
+- `users`: Damso 내부 사용자. 외부 노출에는 내부 `id` 대신 `public_id`를 사용하며, Kakao profile image URL은 nullable `profile_image_url`에 저장한다.
 - `social_accounts`: Kakao OAuth 계정 연결 정보. `provider + provider_user_id` 조합은 unique이며 Kakao access token은 저장하지 않는다.
 - `oauth_login_codes`: Kakao callback 이후 one-time `login_code` 교환을 위한 저장소. raw `login_code`는 저장하지 않고 `code_hash`만 저장한다.
 - `families`: 가족방. 외부 노출에는 내부 `id` 대신 `public_id`를 사용한다.
@@ -66,8 +66,10 @@ Query parameters:
 
 - 백엔드가 `code`를 Kakao token API로 교환한다.
 - Kakao access token으로 Kakao userinfo API를 호출한다.
+- Kakao userinfo의 `kakao_account.profile.profile_image_url`을 사용자 프로필 이미지로 저장한다. 값이 없으면 `thumbnail_image_url`을 fallback으로 사용하고, 둘 다 없으면 nullable로 둔다.
 - `social_accounts.provider = kakao`, `provider_user_id = kakao_id` 기준으로 기존 사용자를 찾는다.
-- 기존 소셜 계정이 없으면 `users`, `social_accounts`를 생성한다.
+- 기존 소셜 계정이 없으면 `users`, `social_accounts`를 생성한다. 신규 사용자는 Kakao profile image URL을 `users.profile_image_url`에 저장한다.
+- 기존 사용자가 다시 로그인했을 때 `users.profile_image_url`이 비어 있으면 Kakao profile image URL로 채우고, 이미 값이 있으면 MVP에서는 덮어쓰지 않는다.
 - one-time `login_code`를 생성하고 DB에는 `code_hash`만 저장한다.
 - `FRONTEND_OAUTH_CALLBACK_URL`에 `loginCode` query parameter만 붙여 redirect한다.
 

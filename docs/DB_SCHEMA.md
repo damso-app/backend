@@ -22,17 +22,18 @@
 
 목적: Damso 내부 사용자 프로필과 역할 선택 상태를 저장한다.
 
-| Column           | Type         | PK  | FK  | Unique | Nullable | Notes                                  |
-| ---------------- | ------------ | --- | --- | ------ | -------- | -------------------------------------- |
-| id               | BIGINT       | Y   | N   | Y      | N        | 내부 PK                                |
-| public_id        | VARCHAR(32)  | N   | N   | Y      | N        | 외부 노출용 사용자 식별자              |
-| display_name     | VARCHAR(100) | N   | N   | N      | Y        | Kakao 프로필 또는 사용자가 수정한 이름 |
-| role             | user_role    | N   | N   | N      | Y        | `child`, `parent`                      |
-| status           | user_status  | N   | N   | N      | N        | 기본값 `active`                        |
-| role_selected_at | TIMESTAMPTZ  | N   | N   | N      | Y        | 역할 선택 시각                         |
-| created_at       | TIMESTAMPTZ  | N   | N   | N      | N        | 생성 시각                              |
-| updated_at       | TIMESTAMPTZ  | N   | N   | N      | N        | 수정 시각                              |
-| deleted_at       | TIMESTAMPTZ  | N   | N   | N      | Y        | soft delete                            |
+| Column            | Type         | PK  | FK  | Unique | Nullable | Notes                                  |
+| ----------------- | ------------ | --- | --- | ------ | -------- | -------------------------------------- |
+| id                | BIGINT       | Y   | N   | Y      | N        | 내부 PK                                |
+| public_id         | VARCHAR(32)  | N   | N   | Y      | N        | 외부 노출용 사용자 식별자              |
+| display_name      | VARCHAR(100) | N   | N   | N      | Y        | Kakao 프로필 또는 사용자가 수정한 이름 |
+| profile_image_url | TEXT         | N   | N   | N      | Y        | Kakao profile image URL                |
+| role              | user_role    | N   | N   | N      | Y        | `child`, `parent`                      |
+| status            | user_status  | N   | N   | N      | N        | 기본값 `active`                        |
+| role_selected_at  | TIMESTAMPTZ  | N   | N   | N      | Y        | 역할 선택 시각                         |
+| created_at        | TIMESTAMPTZ  | N   | N   | N      | N        | 생성 시각                              |
+| updated_at        | TIMESTAMPTZ  | N   | N   | N      | N        | 수정 시각                              |
+| deleted_at        | TIMESTAMPTZ  | N   | N   | N      | Y        | soft delete                            |
 
 인덱스 후보:
 

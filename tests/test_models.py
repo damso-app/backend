@@ -22,6 +22,7 @@ def test_users_model_matches_db_schema() -> None:
     assert users.c.id.type.python_type is int
     assert users.c.public_id.type.length == 32
     assert users.c.display_name.type.length == 100
+    assert users.c.profile_image_url.nullable is True
     assert users.c.role.nullable is True
     assert users.c.status.nullable is False
     assert users.c.deleted_at.nullable is True

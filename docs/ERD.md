@@ -39,6 +39,7 @@ erDiagram
         bigint id PK
         string public_id UK
         string display_name
+        string profile_image_url
         string role
         string status
         datetime role_selected_at

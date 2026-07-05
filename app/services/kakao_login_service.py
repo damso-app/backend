@@ -61,11 +61,13 @@ class KakaoLoginService:
             .limit(1)
         )
         if social_account is not None:
+            self._fill_missing_profile_image_url(social_account.user, user_info=user_info)
             return social_account.user
 
         user = User(
             public_id=self._generate_public_id(db),
             display_name=user_info.nickname,
+            profile_image_url=self._profile_image_url(user_info),
         )
         db.add(user)
         db.flush()
@@ -87,6 +89,12 @@ class KakaoLoginService:
 
         return user
 
+    def _fill_missing_profile_image_url(self, user: User, *, user_info: KakaoUserInfo) -> None:
+        if user.profile_image_url or user_info.profile_image_url is None:
+            return
+
+        user.profile_image_url = self._profile_image_url(user_info)
+
     def _generate_public_id(self, db: Session) -> str:
         for _ in range(5):
             public_id = token_urlsafe(18)[:32]
@@ -95,6 +103,12 @@ class KakaoLoginService:
                 return public_id
 
         raise KakaoLoginError("Failed to generate user public_id")
+
+    @staticmethod
+    def _profile_image_url(user_info: KakaoUserInfo) -> str | None:
+        if user_info.profile_image_url is None:
+            return None
+        return str(user_info.profile_image_url)
 
     def _build_frontend_redirect_url(self, login_code: str) -> str:
         if self._settings.frontend_oauth_callback_url is None:

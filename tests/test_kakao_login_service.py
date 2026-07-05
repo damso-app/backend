@@ -88,8 +88,16 @@ class FakeKakaoAuthService:
         return self.user_info
 
 
-def create_existing_social_account(db: Session) -> User:
-    user = User(public_id="existing_user_public_id", display_name="Existing User")
+def create_existing_social_account(
+    db: Session,
+    *,
+    user_profile_image_url: str | None = None,
+) -> User:
+    user = User(
+        public_id="existing_user_public_id",
+        display_name="Existing User",
+        profile_image_url=user_profile_image_url,
+    )
     db.add(user)
     db.flush()
     db.add(
@@ -150,6 +158,7 @@ async def test_kakao_login_creates_user_and_social_account(
     assert user.public_id
     assert len(user.public_id) <= 32
     assert user.display_name == "Kakao User"
+    assert user.profile_image_url == "https://example.com/profile.jpg"
     assert social_account is not None
     assert social_account.user_id == user.id
     assert social_account.provider == OAuthProvider.KAKAO
@@ -159,6 +168,79 @@ async def test_kakao_login_creates_user_and_social_account(
     assert stored_code is not None
     assert stored_code.user_id == user.id
     assert result.login_code
+
+
+@pytest.mark.anyio
+async def test_kakao_login_succeeds_without_profile_image_url(
+    db: Session,
+    auth_settings: Settings,
+) -> None:
+    kakao_auth_service = FakeKakaoAuthService(
+        user_info=KakaoUserInfo(
+            kakao_id="123456789",
+            nickname="Kakao User",
+            email="user@example.com",
+            profile_image_url=None,
+        )
+    )
+    service = KakaoLoginService(auth_settings, kakao_auth_service=kakao_auth_service)
+
+    await service.login_with_authorization_code(db, code="authorization-code")
+
+    user = db.scalar(select(User).limit(1))
+    social_account = db.scalar(select(SocialAccount).limit(1))
+
+    assert user is not None
+    assert user.profile_image_url is None
+    assert social_account is not None
+    assert social_account.profile_image_url is None
+
+
+@pytest.mark.anyio
+async def test_kakao_login_fills_missing_existing_user_profile_image_url(
+    db: Session,
+    auth_settings: Settings,
+) -> None:
+    user = create_existing_social_account(db, user_profile_image_url=None)
+    kakao_auth_service = FakeKakaoAuthService(
+        user_info=KakaoUserInfo(
+            kakao_id="123456789",
+            nickname="Kakao User",
+            email="user@example.com",
+            profile_image_url="https://example.com/new-profile.jpg",
+        )
+    )
+    service = KakaoLoginService(auth_settings, kakao_auth_service=kakao_auth_service)
+
+    await service.login_with_authorization_code(db, code="authorization-code")
+
+    db.refresh(user)
+    assert user.profile_image_url == "https://example.com/new-profile.jpg"
+
+
+@pytest.mark.anyio
+async def test_kakao_login_does_not_overwrite_existing_user_profile_image_url(
+    db: Session,
+    auth_settings: Settings,
+) -> None:
+    user = create_existing_social_account(
+        db,
+        user_profile_image_url="https://example.com/existing-profile.jpg",
+    )
+    kakao_auth_service = FakeKakaoAuthService(
+        user_info=KakaoUserInfo(
+            kakao_id="123456789",
+            nickname="Kakao User",
+            email="user@example.com",
+            profile_image_url="https://example.com/new-profile.jpg",
+        )
+    )
+    service = KakaoLoginService(auth_settings, kakao_auth_service=kakao_auth_service)
+
+    await service.login_with_authorization_code(db, code="authorization-code")
+
+    db.refresh(user)
+    assert user.profile_image_url == "https://example.com/existing-profile.jpg"
 
 
 @pytest.mark.anyio
