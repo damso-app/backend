@@ -23,6 +23,7 @@
 
 - `GET /api/v1/auth/kakao/login-url`: 카카오 로그인 진입 URL 발급.
 - `GET /api/v1/auth/kakao/callback`: 카카오 OAuth callback 수신.
+- `POST /api/v1/auth/login-code/exchange`: one-time `login_code`를 Damso access token으로 교환.
 - `POST /api/v1/auth/logout`: 현재 세션 또는 토큰 종료.
 
 ### `GET /api/v1/auth/kakao/login-url`
@@ -42,23 +43,31 @@ Kakao authorize URL을 생성한다.
 
 ### `GET /api/v1/auth/kakao/callback`
 
-Kakao OAuth callback을 수신한다.
+Kakao OAuth callback을 수신하고 Damso 로그인 흐름을 완료한다.
 
 Query parameters:
 
 - `code`: Kakao authorization code. 필수.
 - `state`: login-url에서 생성한 state. 현재는 수신만 하고 검증은 TODO.
 
-응답:
+처리 흐름:
 
-```json
-{
-  "status": "received",
-  "state": "generated-state"
-}
+- 백엔드가 `code`를 Kakao token API로 교환한다.
+- Kakao access token으로 Kakao userinfo API를 호출한다.
+- `social_accounts.provider = kakao`, `provider_user_id = kakao_id` 기준으로 기존 사용자를 찾는다.
+- 기존 소셜 계정이 없으면 `users`, `social_accounts`를 생성한다.
+- one-time `login_code`를 생성하고 DB에는 `code_hash`만 저장한다.
+- `FRONTEND_OAUTH_CALLBACK_URL`에 `loginCode` query parameter만 붙여 redirect한다.
+
+Redirect 예시:
+
+```http
+302 Location: http://localhost:3000/oauth/kakao/callback?loginCode=one-time-login-code
 ```
 
-`code`가 없으면 `400`을 반환한다. 이 엔드포인트는 아직 Kakao token API 호출, userinfo 조회, Damso access token 발급, DB 조회/저장을 수행하지 않는다. Kakao access token은 프론트에 반환하지 않으며, access token을 URL query로 전달하지 않는다. 다음 단계에서 `KakaoAuthService`와 `login_code` 교환 흐름을 붙인다.
+`code`가 없으면 `400`을 반환한다. Kakao token 교환 또는 userinfo 조회가 실패하면 `502`를 반환한다. Kakao access token은 백엔드 내부에서만 사용하며 DB, 프론트 응답, redirect URL에 저장하거나 포함하지 않는다. Damso access token도 redirect URL query로 전달하지 않고, 프론트는 `POST /api/v1/auth/login-code/exchange`로 `loginCode`를 교환해야 한다.
+
+현재 `state`는 수신하지만 서버 저장/검증은 아직 TODO다. 다음 보안 고도화 단계에서 server-side state 저장과 callback 검증을 붙인다.
 
 ### Kakao Login 설정
 
@@ -69,7 +78,48 @@ Query parameters:
 - `KAKAO_REDIRECT_URI`: Kakao Developers에 등록할 백엔드 callback URI.
 - `FRONTEND_OAUTH_CALLBACK_URL`: 백엔드 callback 처리 후 프론트로 이동할 OAuth callback URL.
 
-백엔드는 Kakao authorization code를 callback으로 받은 뒤 Kakao token/userinfo API를 서버에서 호출한다. Kakao access token은 프론트에 전달하지 않고, 최종 Damso access token 전달은 URL query 직접 전달 대신 `login_code` 교환 방식을 우선 고려한다.
+백엔드는 Kakao authorization code를 callback으로 받은 뒤 Kakao token/userinfo API를 서버에서 호출한다. Kakao access token은 프론트에 전달하지 않고, 최종 Damso access token 전달은 URL query 직접 전달 대신 `login_code` 교환 방식을 사용한다.
+
+### Kakao REST Provider Service
+
+`KakaoAuthService`는 Damso 내부 서비스 계층에서만 사용하는 Kakao REST API 호출 전용 Provider Service다.
+
+- `exchange_code_for_token(code)`: `POST https://kauth.kakao.com/oauth/token`로 authorization code를 Kakao token 응답으로 교환한다. `client_secret`은 설정값이 있을 때만 요청에 포함한다.
+- `get_user_info(kakao_access_token)`: `GET https://kapi.kakao.com/v2/user/me`로 Kakao 사용자 정보를 조회한다.
+
+Kakao access token, client secret, REST API key는 프론트 응답에 포함하지 않고 로그로 남기지 않는다. Callback 엔드포인트는 이 Provider Service를 호출해 사용자 조회/생성과 `login_code` 발급을 진행한다. State 검증은 다음 보안 고도화 단계에서 구현한다.
+
+### `POST /api/v1/auth/login-code/exchange`
+
+Kakao callback 처리 후 발급될 one-time `login_code`를 Damso 자체 access token으로 교환한다.
+
+요청:
+
+```json
+{
+  "loginCode": "one-time-login-code"
+}
+```
+
+응답:
+
+```json
+{
+  "accessToken": "Damso access token",
+  "tokenType": "bearer"
+}
+```
+
+`login_code`는 서버에 원문으로 저장하지 않고 `oauth_login_codes.code_hash`로만 저장한다. 교환에 성공하면 해당 코드는 `used` 상태로 변경되어 재사용할 수 없다. 만료됐거나 이미 사용됐거나 존재하지 않는 `login_code`는 `400`을 반환한다.
+
+Damso access token은 JWT이며 payload에는 최소 `sub`, `provider`가 포함된다. 사용자의 역할 선택 전에는 `role`이 없을 수 있다. Kakao access token은 이 응답에 포함하지 않고, Damso access token을 redirect URL query로 전달하지 않는다.
+
+JWT 관련 환경변수:
+
+- `JWT_SECRET_KEY`: Damso access token 서명과 `login_code` hash에 사용할 secret.
+- `JWT_ALGORITHM`: JWT 서명 알고리즘. 기본값 `HS256`.
+- `ACCESS_TOKEN_EXPIRE_MINUTES`: Damso access token 만료 시간. 기본값 `60`.
+- `LOGIN_CODE_EXPIRE_MINUTES`: one-time `login_code` 만료 시간. 기본값 `5`.
 
 ## Users
 
