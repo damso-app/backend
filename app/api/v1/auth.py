@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
 from app.core.config import Settings, get_settings
-from app.core.database import get_db
+from app.db.session import get_db
 from app.schemas.auth import AccessTokenResponse, LoginCodeExchangeRequest
 from app.services.kakao_auth_service import KakaoAuthError
 from app.services.kakao_login_service import (

@@ -1,5 +1,97 @@
 # Prompt Log
 
+## 2026-07-05 인증/온보딩 MVP 초기 DB 모델과 Migration 구현
+
+### 요청 프롬프트 요약
+
+Supabase PostgreSQL 연결 설정이 완료된 Damso 백엔드에 인증/온보딩 MVP에 필요한 초기 DB 모델과 Alembic migration을 구현하도록 요청했다. 범위는 `users`, `social_accounts`, `oauth_login_codes`, `families`, `family_members`이며, Kakao access token과 raw `login_code`는 저장하지 않고, 질문/답변/다이어리/회고록 테이블은 만들지 않는다.
+
+### 생성/수정 파일
+
+- `app/models/family.py`
+- `app/models/family_member.py`
+- `app/models/user.py`
+- `app/models/__init__.py`
+- `alembic/versions/20260705_0002_create_family_tables.py`
+- `tests/test_models.py`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- 기존 `users`, `social_accounts`, `oauth_login_codes` 모델과 migration은 유지했다.
+- `families` 모델을 추가하고 `public_id`, `name`, `created_by_user_id`, `status`, `created_at`, `updated_at`, `deleted_at`을 정의했다.
+- `family_members` 모델을 추가하고 `family_id`, `user_id`, `member_role`, `status`, `joined_at`, `created_at`, `updated_at`을 정의했다.
+- `family_status`, `family_member_role`, `family_member_status` enum을 추가했다.
+- `families.public_id`, `family_members(family_id, user_id)` unique index와 조회용 index를 추가했다.
+- `20260705_0002_create_family_tables.py` migration을 추가했다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest
+# 37 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260705_0002 (head)
+
+.venv/bin/alembic upgrade head
+# Running upgrade  -> 20260705_0001, create kakao auth tables
+# Running upgrade 20260705_0001 -> 20260705_0002, create family tables
+```
+
+첫 `alembic upgrade head`는 sandbox DNS 제한으로 Supabase host를 해석하지 못해 실패했고, 네트워크 접근 권한으로 재실행해 성공했다. 실제 `DATABASE_URL`과 비밀번호는 기록하지 않았다.
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-05 Supabase PostgreSQL 연결 설정 반영
+
+### 요청 프롬프트 요약
+
+Damso FastAPI 백엔드에서 Supabase PostgreSQL에 sync SQLAlchemy + `psycopg` 방식으로 연결할 수 있도록 설정을 정리하도록 요청했다. 실제 `DATABASE_URL`은 로컬 `.env`에만 반영하고, 문서와 예시 파일에는 placeholder 또는 마스킹된 값만 남기도록 했다.
+
+### 생성/수정 파일
+
+- `app/db/__init__.py`
+- `app/db/session.py`
+- `app/core/database.py`
+- `app/models/__init__.py`
+- `app/models/user.py`
+- `app/models/social_account.py`
+- `app/models/oauth_login_code.py`
+- `app/api/v1/auth.py`
+- `.env.example`
+- `.env`
+- `README.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `app/db/session.py`에 sync SQLAlchemy 기반 `create_engine`, `Session`, `sessionmaker`, `get_db`, `Base = DeclarativeBase` 구성을 추가했다.
+- `DATABASE_URL`이 없으면 `RuntimeError("DATABASE_URL is not configured")`를 발생시킨다.
+- 기존 `app/core/database.py`는 기존 import 호환을 위해 `app.db.session` 재수출 모듈로 정리했다.
+- `.env.example`의 `DATABASE_URL`은 `postgresql+psycopg://` 형식의 placeholder로 유지했다.
+- 로컬 `.env`에는 실제 Supabase `DATABASE_URL`을 반영했다.
+- `.gitignore`와 `.dockerignore`에 `.env`와 `.env.*`가 포함되어 있음을 확인했다.
+- Dockerfile은 Cloud Run 호환을 위해 `EXPOSE 8080`, `--port ${PORT:-8080}` 설정을 유지한다.
+- `requirements.txt`는 `psycopg[binary]`, SQLAlchemy, Alembic을 유지하고 `asyncpg`가 없음을 확인했다.
+
+### DATABASE_URL 기록 형식
+
+```env
+DATABASE_URL=postgresql+psycopg://postgres.<project-ref>:<password>@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-03 Initial Backend Setup
 
 ### 요청 프롬프트 요약
