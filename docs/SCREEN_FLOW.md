@@ -38,30 +38,18 @@
 
 ## 답변 기록
 
-- 사용자 행동: 부모님이 스마트폰에서 영상 또는 텍스트로 답변한다.
-- API 후보: `POST /api/v1/answers`, `GET /api/v1/answers/{answer_id}`
-- 저장 데이터: answer id, question id, respondent id, text answer, video asset metadata, submitted at.
+- 사용자 행동: 부모님이 스마트폰에서 영상으로 답변한다.
+- API 후보: `POST /api/v1/answers`
+- 저장 데이터: answer id, question send id, user id, family id, video origin url, video asset metadata, submitted at.
 
-## AI 분석 상태
+## 네컷 그리드
 
-- 사용자 행동: 답변 제출 후 요약과 분석 진행 상태를 확인한다.
-- API 후보: `GET /api/v1/answers/{answer_id}/analysis`, `POST /api/v1/answers/{answer_id}/analysis`
-- 저장 데이터: analysis status, summary, keywords, model metadata, error reason.
+- 사용자 행동: AI 처리가 끝난 답변 영상을 날짜 + 가족 단위로 묶은 네컷 그리드를 확인한다.
+- API 후보: `GET /api/v1/clips`
+- 저장 데이터: 없음. `answers`를 `family_id`, `DATE(created_at)` 기준으로 조회한 결과.
 
-## 다이어리 목록/상세
+## 컷 상세
 
-- 사용자 행동: 가족 다이어리 목록과 개별 기록을 확인한다.
-- API 후보: `GET /api/v1/diaries`, `GET /api/v1/diaries/{diary_id}`
-- 저장 데이터: diary id, family id, linked answer ids, title, preview, created at.
-
-## 회고록 결과
-
-- 사용자 행동: 누적된 답변으로 생성된 회고록 결과를 확인한다.
-- API 후보: `POST /api/v1/memoirs`, `GET /api/v1/memoirs`, `GET /api/v1/memoirs/{memoir_id}`
-- 저장 데이터: memoir id, family id, source diary ids, generated text, generation status.
-
-## 공유 링크
-
-- 사용자 행동: 가족 다이어리 또는 회고록을 외부 가족에게 공유한다.
-- API 후보: `POST /api/v1/share-links`, `GET /api/v1/share-links/{token}`
-- 저장 데이터: token hash, target type, target id, expiry, permission scope.
+- 사용자 행동: 그리드에서 컷을 탭해 바텀시트 또는 상세에서 영상 재생, 명대사, 요약을 확인한다.
+- API 후보: `GET /api/v1/answers/{answer_id}/clip`
+- 저장 데이터: video_clip id, answer id, thumbnail url, hls url, transcript, title, quote, summary, emotion tags.
