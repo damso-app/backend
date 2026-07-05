@@ -94,18 +94,17 @@ Query parameters:
 
 ## Answers
 
-- `POST /api/v1/answers`: 질문 답변 생성.
-- `GET /api/v1/answers/{answer_id}`: 답변 상세 조회.
-- `GET /api/v1/answers/{answer_id}/analysis`: AI 분석 상태 조회.
-- `POST /api/v1/answers/{answer_id}/analysis`: AI 분석 요청.
+- `POST /api/v1/answers/upload-url`: 영상 업로드용 presigned URL 발급.
+- `POST /api/v1/answers`: 질문 답변 생성 (영상 1개 원본 메타데이터 등록). `upload-url`로 발급받은 경로에 업로드를 마친 뒤 `video_origin_url` 등을 등록한다.
+- `GET /api/v1/answers/{answer_id}/clip`: 답변에 대한 영상 클립 상세 조회. 바텀시트 또는 상세에서 영상 재생, 명대사, 요약을 표시할 때 사용한다. `status = completed`가 아니면 클립이 아직 없다. `video_clips`의 내부 PK(`clip_id`)는 API에 노출하지 않고 `answer_id`로만 조회한다.
 
-## Diaries
+## Clips
 
-- `GET /api/v1/diaries`: 가족 다이어리 목록 조회.
-- `GET /api/v1/diaries/{diary_id}`: 가족 다이어리 상세 조회.
+- `GET /api/v1/clips`: 가족 + 날짜 단위 네컷 그리드 목록 조회. `family_id`, `DATE(created_at)` 기준으로 묶어서 반환하며, 각 항목에 `answer_id`, `status`(`submitted`/`processing`/`completed`/`failed`)와 `status = completed`일 때의 `thumbnail_url`을 포함한다.
 
-## Memoirs
+## Realtime
 
-- `POST /api/v1/memoirs`: 회고록 생성 요청.
-- `GET /api/v1/memoirs`: 회고록 목록 조회.
-- `GET /api/v1/memoirs/{memoir_id}`: 회고록 상세 조회.
+- AI 처리 완료/실패는 별도 폴링 API 없이 Supabase Realtime **Broadcast**로 전달한다. 원본 `answers`/`video_clips` 테이블을 `postgres_changes`로 직접 구독하지 않는다. 내부 PK/FK(`question_send_id`, `family_id` 등)를 그대로 클라이언트에 노출하지 않기 위해서다.
+- 채널: `family:{family_id}`
+- 이벤트 payload: `answer_id`, `status`(`completed` 또는 `failed`), 성공 시 `thumbnail_url`. 상세는 `GET /api/v1/answers/{answer_id}/clip`으로 다시 조회한다.
+- 백엔드는 `video_clips` insert와 `answers.status = completed` 업데이트를 같은 트랜잭션으로 처리한 뒤 broadcast를 보낸다. 순서가 바뀌면 그리드/클라이언트에는 `completed`로 보이는데 클립 상세 조회가 실패하는 순간이 생길 수 있다.

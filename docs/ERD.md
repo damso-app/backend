@@ -11,10 +11,7 @@
 - 가족방, 가족 구성원, 초대 코드
 - 질문 목록, 질문 보내기
 - 답변과 영상 메타데이터
-- AI 분석
-- 다이어리
-- 회고록
-- 공유 링크
+- 영상 클립(AI 가공 결과)
 
 제외 범위:
 
@@ -28,11 +25,11 @@
 ## Design Principles
 
 - 내부 PK는 `BIGINT`를 사용한다.
-- 외부에 노출되는 식별자는 `public_id`, `invite_code`, `share_code` 같은 별도 값을 사용한다.
-- 영상 파일은 DB에 저장하지 않고 `storage_path`와 메타데이터만 저장한다.
+- 외부에 노출되는 식별자는 `public_id`, `invite_code` 같은 별도 값을 사용한다.
+- 영상 원본은 DB에 저장하지 않고 `video_origin_url`과 메타데이터만 저장한다. 가공본(`hls_url`)은 `video_clips`에 분리 저장한다.
 - Kakao access token은 DB에 저장하지 않는다.
 - `social_accounts`는 `provider`, `provider_user_id`를 중심으로 계정을 연결한다.
-- Raw invite/share code는 유출 위험을 줄이기 위해 DB에는 해시 저장을 우선한다.
+- Raw invite code는 유출 위험을 줄이기 위해 DB에는 해시 저장을 우선한다.
 
 ## Mermaid ERD
 
@@ -135,11 +132,10 @@ erDiagram
 
     ANSWERS {
         bigint id PK
-        string public_id UK
         bigint question_send_id FK
-        bigint respondent_user_id FK
-        text text_answer
-        string video_storage_path
+        bigint user_id FK
+        bigint family_id FK
+        string video_origin_url
         string video_mime_type
         int video_duration_seconds
         int video_size_bytes
@@ -150,78 +146,17 @@ erDiagram
         datetime deleted_at
     }
 
-    AI_ANALYSES {
+    VIDEO_CLIPS {
         bigint id PK
         bigint answer_id FK
-        string status
+        string thumbnail_url
+        string hls_url
+        text transcript
+        string title
+        text quote
         text summary
-        json keywords
-        string model_name
-        json model_metadata
-        text error_reason
-        datetime requested_at
-        datetime completed_at
+        json emotion_tags
         datetime created_at
-        datetime updated_at
-    }
-
-    DIARIES {
-        bigint id PK
-        string public_id UK
-        bigint family_id FK
-        bigint created_by_user_id FK
-        string title
-        text preview
-        string status
-        datetime created_at
-        datetime updated_at
-        datetime deleted_at
-    }
-
-    DIARY_ANSWERS {
-        bigint id PK
-        bigint diary_id FK
-        bigint answer_id FK
-        datetime created_at
-    }
-
-    MEMOIRS {
-        bigint id PK
-        string public_id UK
-        bigint family_id FK
-        bigint requested_by_user_id FK
-        string title
-        text generated_text
-        string generation_status
-        text error_reason
-        datetime requested_at
-        datetime completed_at
-        datetime created_at
-        datetime updated_at
-        datetime deleted_at
-    }
-
-    MEMOIR_DIARIES {
-        bigint id PK
-        bigint memoir_id FK
-        bigint diary_id FK
-        datetime created_at
-    }
-
-    SHARE_LINKS {
-        bigint id PK
-        bigint family_id FK
-        bigint created_by_user_id FK
-        bigint diary_id FK
-        bigint memoir_id FK
-        string share_code_hash UK
-        string target_type
-        string permission_scope
-        string status
-        datetime expires_at
-        datetime revoked_at
-        datetime created_at
-        datetime updated_at
     }
 
     USERS ||--o{ SOCIAL_ACCOUNTS : has
@@ -239,19 +174,8 @@ erDiagram
     USERS ||--o{ QUESTION_SENDS : receives
     QUESTION_SENDS ||--o| ANSWERS : answered_by
     USERS ||--o{ ANSWERS : submits
-    ANSWERS ||--o{ AI_ANALYSES : analyzed_by
-    FAMILIES ||--o{ DIARIES : owns
-    USERS ||--o{ DIARIES : creates
-    DIARIES ||--o{ DIARY_ANSWERS : links
-    ANSWERS ||--o{ DIARY_ANSWERS : appears_in
-    FAMILIES ||--o{ MEMOIRS : owns
-    USERS ||--o{ MEMOIRS : requests
-    MEMOIRS ||--o{ MEMOIR_DIARIES : uses
-    DIARIES ||--o{ MEMOIR_DIARIES : source_for
-    FAMILIES ||--o{ SHARE_LINKS : owns
-    USERS ||--o{ SHARE_LINKS : creates
-    DIARIES ||--o{ SHARE_LINKS : shared_as_diary
-    MEMOIRS ||--o{ SHARE_LINKS : shared_as_memoir
+    FAMILIES ||--o{ ANSWERS : scopes
+    ANSWERS ||--o| VIDEO_CLIPS : processed_into
 ```
 
 ## Entity Relationships
@@ -272,32 +196,18 @@ erDiagram
 
 `questions`는 질문 목록 화면의 질문 원문과 출처를 저장한다. `QUESTION_SENDS`는 자녀가 특정 부모님에게 질문을 보낸 행위다. 질문 원문과 질문 발송을 분리하면 같은 질문을 여러 사용자에게 보내거나, 이전 질문 상태를 조회하기 쉽다.
 
-`answers`는 부모님이 스마트폰에서 제출한 텍스트와 영상 메타데이터를 저장한다. 영상 원본은 storage에 저장하고 DB에는 `video_storage_path`만 둔다.
+`answers`는 부모님이 스마트폰에서 제출한 영상 메타데이터를 저장한다. 영상 원본은 storage에 저장하고 DB에는 `video_origin_url`만 둔다. `family_id`는 `question_sends.family_id`를 비정규화 복사해 네컷 그리드 조회(`family_id`, `DATE(created_at)` 기준 `GROUP BY`)를 별도 테이블 없이 처리한다.
 
-### AI Analysis
+### Video Clips
 
-`ai_analyses`는 답변별 요약, 키워드, 모델 메타데이터, 실패 사유를 저장한다. 답변 제출 직후 분석 상태를 조회하는 화면 흐름 때문에 `status`, `requested_at`, `completed_at`이 필요하다.
-
-### Diaries and Memoirs
-
-`diaries`는 가족 다이어리 목록/상세 화면의 표시 단위다. 한 다이어리가 여러 답변을 묶을 수 있으므로 `diary_answers` 조인 테이블을 둔다.
-
-`memoirs`는 누적된 다이어리로 생성되는 회고록 결과다. 어떤 다이어리를 재료로 썼는지 추적하기 위해 `memoir_diaries`를 둔다.
-
-### Share Links
-
-공유 링크 화면 흐름은 `share_links`로 처리한다. 공유 대상은 다이어리 또는 회고록이며, `target_type`과 nullable FK(`diary_id`, `memoir_id`)를 함께 두고 둘 중 하나만 채워지도록 체크 제약을 둔다. 공유 URL의 원문 코드는 저장하지 않고 `share_code_hash`로 조회하는 방식을 우선한다.
+`video_clips`는 답변 영상을 AI로 가공한 결과(썸네일, HLS 스트리밍 URL, 전사, 제목, 명대사, 요약, 감정 태그)를 저장한다. 네컷 그리드에서 컷을 탭하면 바텀시트 또는 상세 화면에서 이 데이터로 영상 재생, 명대사, 요약을 보여준다.
 
 ## Deletion and Status Strategy
 
-주요 사용자 데이터에는 `deleted_at`을 우선 둔다. 사용자, 가족, 질문, 답변, 다이어리, 회고록은 목록/상세에서 숨기더라도 감사와 복구 가능성이 있어 soft delete가 적합하다.
+주요 사용자 데이터에는 `deleted_at`을 우선 둔다. 사용자, 가족, 질문, 답변은 목록/상세에서 숨기더라도 감사와 복구 가능성이 있어 soft delete가 적합하다.
 
-상태 전이가 중요한 테이블에는 `status`를 둔다. 가족 구성원, 초대 코드, 질문 발송, AI 분석, 회고록 생성, 공유 링크는 `active`, `used`, `expired`, `revoked`, `pending`, `completed`, `failed` 같은 상태가 화면과 API 응답에 직접 필요하다.
-
-`deleted_at`과 `status`를 모두 갖는 테이블은 사용자에게 보이는 주요 콘텐츠다. 삭제 여부와 작업 상태가 서로 다른 의미이기 때문이다. 예를 들어 회고록은 `generation_status = completed`이면서 나중에 `deleted_at`으로 숨겨질 수 있다.
+상태 전이가 중요한 테이블에는 `status`를 둔다. 가족 구성원, 초대 코드, 질문 발송은 `active`, `used`, `expired`, `revoked` 같은 상태가 필요하다. 답변은 제출부터 AI 처리까지의 흐름을 `submitted`, `processing`, `completed`, `failed`로 표현한다.
 
 ## API Draft Notes
 
-- `SCREEN_FLOW.md`에는 공유 링크 API 후보가 있으나 `docs/API_DRAFT.md`에는 아직 `share-links` 섹션이 없다. MVP 공유 링크를 유지한다면 `POST /api/v1/share-links`, `GET /api/v1/share-links/{share_code}` 추가가 자연스럽다.
-- 현재 `API_DRAFT.md`는 `{family_id}`, `{question_id}` 같은 이름을 쓰지만, DB 설계상 외부 API에는 내부 `BIGINT id` 대신 `public_id` 사용을 권장한다. 내부 PK 노출을 막고 추측 가능한 순차 ID 접근을 줄일 수 있다.
-- `MVP_SCOPE.md`에는 공유 링크가 포함 기능과 제외 기능 양쪽에 적혀 있다. 이번 ERD는 사용자 요청과 `SCREEN_FLOW.md`를 따라 MVP 공유 링크를 포함한다.
+- 현재 `API_DRAFT.md`는 `{family_id}`, `{question_id}` 같은 이름을 쓰지만, DB 설계상 외부 API에는 내부 `BIGINT id` 대신 `public_id` 사용을 권장한다. 내부 PK 노출을 막고 추측 가능한 순차 ID 접근을 줄일 수 있다. `answers`, `video_clips`는 현재 외부 상세 조회 API가 없어 `public_id`를 두지 않았다.
