@@ -66,6 +66,228 @@ Damso 백엔드 레포에 추가한 `.agents/skills/implementing-kakao-login/SKI
 
 AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
 
+## 2026-07-05 Kakao Callback 실제 로그인 흐름 통합
+
+### 요청 프롬프트 요약
+
+`implementing-kakao-login` Skill을 사용해 Kakao callback을 실제 Damso 로그인 흐름으로 통합하도록 요청했다. 먼저 `AGENTS.md`, `docs/API_DRAFT.md`, `docs/DB_SCHEMA.md`, `.agents/skills/implementing-kakao-login/SKILL.md`만 확인한 뒤, callback에서 authorization code를 Kakao token/userinfo API로 처리하고, `social_accounts` 기준으로 사용자를 찾거나 생성하며, one-time `login_code`만 프론트 redirect URL에 붙인다. Kakao access token과 Damso access token은 redirect query나 DB에 저장하지 않고, state 저장/검증은 TODO로 유지한다.
+
+### 생성/수정 파일
+
+- `app/api/v1/auth.py`
+- `app/services/kakao_login_service.py`
+- `tests/test_auth.py`
+- `tests/test_kakao_login_service.py`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `KakaoLoginService`를 추가해 callback 비즈니스 로직을 route handler에서 분리했다.
+- Callback에서 `KakaoAuthService.exchange_code_for_token`, `get_user_info`를 호출하도록 연결했다.
+- `provider = kakao`, `provider_user_id = kakao_id` 기준으로 기존 `social_accounts`를 조회한다.
+- 기존 계정이 없으면 `users`, `social_accounts`를 생성한다.
+- `LoginCodeService`로 one-time `login_code`를 생성하고, 프론트 callback URL에는 `loginCode`만 붙여 `302` redirect한다.
+- Kakao access token은 DB, 응답, redirect URL에 포함하지 않는다.
+- Damso access token도 redirect URL query에 포함하지 않는다.
+- `state` 저장/검증은 아직 TODO로 유지했다.
+
+### 사람이 확인할 포인트
+
+- `FRONTEND_OAUTH_CALLBACK_URL`이 실제 프론트 OAuth callback 경로와 일치해야 한다.
+- `state` server-side 저장/검증은 다음 보안 고도화 작업에서 구현해야 한다.
+- 신규 사용자 `public_id` 생성 정책은 현재 token 기반 최소 구현이며, 운영 정책에 맞춘 충돌 처리/형식 확정이 필요할 수 있다.
+- Kakao userinfo 동의항목에 따라 nickname, email, profile image가 nullable일 수 있다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest
+# 35 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-05 Damso Access Token과 Login Code Exchange 구현
+
+### 요청 프롬프트 요약
+
+`implementing-kakao-login` Skill을 사용해 Damso 자체 access token 발급과 one-time `login_code` 교환 서비스를 구현하도록 요청했다. 먼저 `AGENTS.md`, `docs/API_DRAFT.md`, `docs/DB_SCHEMA.md`, `.agents/skills/implementing-kakao-login/SKILL.md`만 확인한 뒤, JWT 유틸, `LoginCodeService`, `POST /api/v1/auth/login-code/exchange` API를 구현한다. Kakao callback 통합, KakaoAuthService와 사용자 생성/조회 연결, refresh token, logout, 실제 `.env`, 실제 secret 값은 만들지 않는다.
+
+### 생성/수정 파일
+
+- `app/core/config.py`
+- `app/core/security.py`
+- `app/services/login_code_service.py`
+- `app/schemas/auth.py`
+- `app/api/v1/auth.py`
+- `.env.example`
+- `requirements.txt`
+- `tests/test_config.py`
+- `tests/test_login_code.py`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `create_access_token`, `verify_access_token`을 추가했다.
+- JWT payload는 `sub`, `provider`를 포함하고, `role`은 역할 선택 전 nullable/optional로 처리한다.
+- `login_code`는 원문 저장 없이 HMAC-SHA256 기반 `code_hash`만 DB에 저장한다.
+- `login_code` 기본 만료 시간은 `5`분으로 설정했다.
+- 교환 성공 시 `oauth_login_codes.status = used`, `used_at`을 기록하고 Damso access token만 반환한다.
+- 만료 코드와 재사용 코드는 실패 처리한다.
+- Kakao access token은 반환하지 않고, access token을 redirect URL query로 전달하는 흐름도 만들지 않았다.
+
+### 사람이 확인할 포인트
+
+- 운영 환경에는 `JWT_SECRET_KEY`를 충분히 긴 secret으로 안전하게 주입해야 한다.
+- access token 만료 시간과 `login_code` 만료 시간은 제품 보안 정책에 맞게 조정할 수 있다.
+- 다음 단계에서 Kakao callback 처리와 Damso 사용자 생성/조회가 완료되면 `LoginCodeService.create_login_code`를 callback 흐름에 연결해야 한다.
+- refresh token과 logout은 아직 구현하지 않았다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest
+# 30 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-05 Kakao 로그인 최소 DB 모델과 Migration 구현
+
+### 요청 프롬프트 요약
+
+`implementing-kakao-login` Skill을 사용해 Kakao 로그인에 필요한 최소 DB 모델과 Alembic migration을 구현하도록 요청했다. 먼저 `AGENTS.md`, `docs/DB_SCHEMA.md`, `docs/ERD.md`, `docs/API_DRAFT.md`, `.agents/skills/implementing-kakao-login/SKILL.md`만 확인한 뒤, `users`, `social_accounts`, `oauth_login_codes` 모델과 migration을 추가한다. Kakao access token과 refresh token은 저장하지 않고, raw `login_code` 대신 `code_hash`만 저장한다. family/question/answer 관련 테이블, callback 통합, login_code exchange API, 실제 DB 접속 테스트, 실제 `.env`는 만들지 않는다.
+
+### 생성/수정 파일
+
+- `app/core/database.py`
+- `app/models/__init__.py`
+- `app/models/user.py`
+- `app/models/social_account.py`
+- `app/models/oauth_login_code.py`
+- `alembic.ini`
+- `alembic/env.py`
+- `alembic/script.py.mako`
+- `alembic/versions/20260705_0001_create_kakao_auth_tables.py`
+- `tests/test_models.py`
+- `docs/DB_SCHEMA.md`
+- `docs/PROMPT_LOG.md`
+
+### 생성된 Migration
+
+- `20260705_0001_create_kakao_auth_tables.py`
+
+### 사람이 확인할 포인트
+
+- 운영 환경의 `DATABASE_URL`은 실제 secret 관리 방식으로 주입해야 한다.
+- 실제 DB/Supabase에 migration을 적용하기 전에 PostgreSQL 권한, schema, migration 실행 계정을 확인해야 한다.
+- `public_id` 생성 정책과 `code_hash` 생성/검증 정책은 login flow 구현 시 별도 서비스에서 확정해야 한다.
+- Kakao access token과 refresh token 저장 컬럼은 만들지 않았다.
+- callback 통합, Damso 사용자 생성/조회 서비스, one-time `login_code` exchange API는 아직 구현하지 않았다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest
+# 22 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260705_0001 (head)
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-05 KakaoAuthService 자체 코드 리뷰
+
+### 요청 프롬프트 요약
+
+방금 구현한 `KakaoAuthService` 작업을 코드 리뷰 관점에서 자체 검증하도록 요청했다. Kakao REST API endpoint, form-urlencoded token 요청, Bearer userinfo 요청, secret/token 노출 여부, `.env` 생성 여부, 에러 처리, mock 기반 테스트, route handler 분리, callback/DB/login_code 미구현 상태를 확인하고 필요한 수정은 최소 범위로 반영한다.
+
+### 검토 결과와 수정 내용
+
+- Kakao token endpoint와 userinfo endpoint, 요청 method/header/form payload가 요구사항과 일치함을 확인했다.
+- route handler에는 외부 HTTP 호출 로직이 없고, callback 통합, DB 저장, `login_code` 교환은 아직 구현하지 않았음을 확인했다.
+- 실제 `.env` 파일은 없고, 로그 출력 코드나 실제 secret 값은 추가되지 않았음을 확인했다.
+- `id: null` userinfo 응답이 `str(None)`으로 통과할 수 있는 문제를 막기 위해 Kakao user id 검증을 보강했다.
+- invalid JSON 응답 테스트와 nullable userinfo 필드 테스트를 보강했다.
+- 테스트용 provider token 값은 실제 토큰처럼 보이지 않는 mock sentinel 값으로 정리했다.
+
+### 수정 파일
+
+- `app/services/kakao_auth_service.py`
+- `tests/test_kakao_auth_service.py`
+- `docs/PROMPT_LOG.md`
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest
+# 17 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-05 Kakao REST Provider Service 구현
+
+### 요청 프롬프트 요약
+
+`implementing-kakao-login` Skill을 사용해 Damso 백엔드에 Kakao REST API 호출 전용 Provider Service를 구현하도록 요청했다. `AGENTS.md`, `docs/API_DRAFT.md`, `docs/DB_SCHEMA.md`, `.agents/skills/implementing-kakao-login/SKILL.md`만 먼저 확인한 뒤, `KakaoAuthService`를 만들고 Kakao token 교환과 userinfo 조회를 `httpx.AsyncClient` 기반으로 구현한다. 실제 Kakao 서버 호출은 테스트에서 mock 처리하고, callback 통합, state 검증, `login_code` 교환, DB 모델과 migration은 만들지 않는다.
+
+### 생성/수정 파일
+
+- `app/services/__init__.py`
+- `app/services/kakao_auth_service.py`
+- `app/schemas/__init__.py`
+- `app/schemas/auth.py`
+- `tests/test_kakao_auth_service.py`
+- `requirements.txt`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 사람이 확인할 포인트
+
+- 운영 환경의 `KAKAO_REST_API_KEY`, `KAKAO_CLIENT_SECRET`, `KAKAO_REDIRECT_URI`는 실제 secret 관리 방식으로 주입해야 한다.
+- Kakao Developers에 등록된 Redirect URI와 `KAKAO_REDIRECT_URI`가 정확히 일치해야 한다.
+- callback 라우터에는 아직 `KakaoAuthService`를 연결하지 않았다. 다음 단계에서 state 검증, Kakao token/userinfo 호출, Damso 사용자 조회/생성, one-time `login_code` 발급을 붙여야 한다.
+- Kakao access token은 내부 DTO에서만 다루며 프론트 응답 스키마에 포함하지 않는다.
+- Kakao SDK, DB 모델, SQLAlchemy 모델, Alembic migration은 추가하지 않았다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest
+# 14 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-04 Kakao OAuth 로그인 진입 흐름 구현
 
 ### 요청 프롬프트 요약

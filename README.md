@@ -25,6 +25,9 @@ python -m pip install -r requirements-dev.txt
 
 실제 환경변수는 `.env`에 두되, `.env`는 커밋하지 않는다. 필요한 키 이름은 `.env.example`을 참고한다.
 
+Kakao Redirect URI는 Kakao Developers 앱 설정에 백엔드 callback 주소
+`KAKAO_REDIRECT_URI` 값과 동일하게 등록한다.
+
 ## Run
 
 ```bash
