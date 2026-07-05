@@ -5,9 +5,11 @@ from typing import TYPE_CHECKING
 from sqlalchemy import BigInteger, DateTime, Enum, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.database import Base
+from app.db.session import Base
 
 if TYPE_CHECKING:
+    from app.models.family import Family
+    from app.models.family_member import FamilyMember
     from app.models.oauth_login_code import OAuthLoginCode
     from app.models.social_account import SocialAccount
 
@@ -75,6 +77,14 @@ class User(Base):
         cascade="all, delete-orphan",
     )
     oauth_login_codes: Mapped[list["OAuthLoginCode"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    created_families: Mapped[list["Family"]] = relationship(
+        back_populates="created_by_user",
+        foreign_keys="Family.created_by_user_id",
+    )
+    family_members: Mapped[list["FamilyMember"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )

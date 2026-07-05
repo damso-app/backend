@@ -1,6 +1,6 @@
 # Damso DB Schema v0.1
 
-이 문서는 Damso MVP ERD를 테이블 설계 초안으로 풀어 쓴 문서다. 현재 `users`, `social_accounts`, `oauth_login_codes`는 Kakao 로그인 최소 범위로 SQLAlchemy 모델과 Alembic migration을 작성했고, 나머지 테이블은 아직 설계 초안이다.
+이 문서는 Damso MVP ERD를 테이블 설계 초안으로 풀어 쓴 문서다. 현재 `users`, `social_accounts`, `oauth_login_codes`, `families`, `family_members`는 인증/온보딩 MVP 최소 범위로 SQLAlchemy 모델과 Alembic migration을 작성했고, 나머지 테이블은 아직 설계 초안이다.
 
 ## Global Rules
 

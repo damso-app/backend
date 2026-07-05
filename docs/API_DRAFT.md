@@ -7,6 +7,18 @@
 - 인증, 권한, 에러 응답 형식은 본격 구현 전에 별도 확정한다.
 - DB 스키마와 모델은 ERD 확정 후 작성한다.
 
+## 데이터 모델 참고
+
+인증/온보딩 MVP의 초기 DB 모델은 다음 테이블을 기준으로 한다.
+
+- `users`: Damso 내부 사용자. 외부 노출에는 내부 `id` 대신 `public_id`를 사용한다.
+- `social_accounts`: Kakao OAuth 계정 연결 정보. `provider + provider_user_id` 조합은 unique이며 Kakao access token은 저장하지 않는다.
+- `oauth_login_codes`: Kakao callback 이후 one-time `login_code` 교환을 위한 저장소. raw `login_code`는 저장하지 않고 `code_hash`만 저장한다.
+- `families`: 가족방. 외부 노출에는 내부 `id` 대신 `public_id`를 사용한다.
+- `family_members`: 사용자와 가족방의 연결, 가족 내 역할, 합류 상태를 저장한다.
+
+질문, 답변, 영상 클립 테이블은 이번 인증/온보딩 초기 migration 범위에 포함하지 않는다.
+
 ## Health
 
 ### `GET /health`
