@@ -22,3 +22,7 @@ build/
 *.egg-info/
 
 .DS_Store
+
+# CLAUDE
+.claude/
+CLAUDE.md

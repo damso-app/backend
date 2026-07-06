@@ -552,9 +552,10 @@ Query parameters:
 - `PATCH /api/v1/answers/questions/{question_send_id}/read`: 나에게 온 질문 읽음 처리.
 - `POST /api/v1/answers/upload-url`: 영상 업로드용 presigned URL 발급.
 - `POST /api/v1/answers`: 질문 답변 생성 (영상 1개 원본 메타데이터 등록). `upload-url`로 발급받은 경로에 업로드를 마친 뒤 `video_origin_url` 등을 등록한다.
+- `POST /api/v1/answers/ai-callback`: AI 서버가 처리 완료/실패 결과를 push하는 콜백 수신 엔드포인트. 클라이언트나 프론트에서는 호출하지 않는다.
 - `GET /api/v1/answers/{answer_id}/clip`: 답변에 대한 영상 클립 상세 조회. 바텀시트 또는 상세에서 영상 재생, 명대사, 요약을 표시할 때 사용한다. `status = completed`가 아니면 클립이 아직 없다. `video_clips`의 내부 PK(`clip_id`)는 API에 노출하지 않고 `answer_id`로만 조회한다.
 
-영상 업로드와 실제 답변 저장은 후속 기능이다. 이번 질문/답변 루프 MVP 1차에서는 받은 질문 조회와 읽음 처리까지만 구현한다.
+영상 업로드와 실제 답변 저장은 후속 기능이다. 이번 질문/답변 루프 MVP 1차에서는 받은 질문 조회와 읽음 처리까지만 구현한다. 구현 순서는 영상 업로드(`upload-url`, `POST /api/v1/answers`)를 먼저 완성하고, AI 연동(`ai-callback` 수신, 클립 생성)은 그다음 단계로 진행한다.
 
 ### `GET /api/v1/answers/questions`
 
@@ -633,9 +634,161 @@ Query parameters:
 }
 ```
 
+### `POST /api/v1/answers/upload-url`
+
+영상 업로드용 GCS presigned URL(V4, PUT)을 발급한다. 오브젝트 경로는 클라이언트가 정하지 못하고 서버가 `family_id` + `question_send_id` + `videoMimeType` 기준으로 결정적으로 계산한다(`answers/{family_id}/{question_send_id}/original.{ext}`).
+
+요청:
+
+```json
+{
+  "questionSendId": 10,
+  "videoMimeType": "video/mp4"
+}
+```
+
+응답:
+
+```json
+{
+  "uploadUrl": "https://storage.googleapis.com/damso-videos/answers/1/10/original.mp4?X-Goog-Algorithm=...",
+  "expiresAt": "2026-07-06T10:15:00Z"
+}
+```
+
+지원하는 `videoMimeType`: `video/mp4`, `video/quicktime`, `video/webm`, `video/3gpp`.
+
+에러:
+
+- 존재하지 않는 `questionSendId`: `404`
+- 현재 사용자가 그 질문의 수신자가 아님: `403`
+- 이미 답변이 등록된 질문: `409`
+- 지원하지 않는 `videoMimeType`: `415`
+
+### `POST /api/v1/answers`
+
+`upload-url`로 발급받은 URL에 클라이언트가 GCS로 직접 PUT 업로드를 마친 뒤, 원본 영상 메타데이터를 등록해 답변을 완료한다.
+
+요청:
+
+```json
+{
+  "questionSendId": 10,
+  "videoMimeType": "video/mp4",
+  "videoDurationSeconds": 42,
+  "videoSizeBytes": 10485760
+}
+```
+
+응답:
+
+```json
+{
+  "answerId": 7,
+  "questionSendId": 10,
+  "status": "submitted",
+  "submittedAt": "2026-07-06T10:16:00Z"
+}
+```
+
+`video_origin_url`은 `upload-url` 발급 때와 동일한 규칙으로 서버가 다시 계산해 저장하며, 클라이언트가 별도로 전달하지 않는다. 성공 시 같은 트랜잭션에서 `question_sends.status = answered`, `answered_at`을 갱신한다.
+
+에러:
+
+- 존재하지 않는 `questionSendId`: `404`
+- 현재 사용자가 그 질문의 수신자가 아님: `403`
+- 이미 답변이 등록된 질문: `409`
+- 지원하지 않는 `videoMimeType`: `415`
+
+### AI 처리 흐름 (`POST /api/v1/answers` 이후)
+
+```
+클라이언트 → GCS Signed URL로 원본 mp4 업로드 → POST /api/v1/answers
+
+백엔드
+  → answers insert (status: submitted)
+  → BackgroundTasks
+      ├── ffmpeg 썸네일 추출 → GCS 업로드 → answers.thumbnail_url 업데이트
+      └── AI 서버 POST (fire and forget, mediaPath JSON 모드)
+  → 201 반환
+
+AI 서버
+  → STT + LLM 파이프라인 (AI-002~AI-009). 영상 자체는 가공하지 않는다.
+  → 백엔드 콜백 POST /api/v1/answers/ai-callback (pipelineResults JSON)
+
+백엔드 (콜백 수신)
+  → ffmpeg HLS 변환 → GCS 업로드
+  → video_clips insert (+ video_clip_ai_results에 원본 pipelineResults snapshot)
+  → answers.status = completed 업데이트
+  → Supabase Realtime broadcast
+```
+
+백엔드가 AI 서버로 보내는 요청은 AI 서버 API 스펙(`DAMSO-AI-API` 명세)의 JSON Path Mode를 강제한다. Multipart 업로드 모드(`file` 첨부)는 쓰지 않는다 — GCS 경로 문자열만 넘기고, 실제 파일 바이트를 백엔드가 내려받아 재업로드하지 않는다.
+
+```json
+POST https://{ai-server-host}/api/v1/ai/stt/transcribe
+{
+  "answerId": "123",
+  "questionId": "10",
+  "send_user": "최대현",
+  "send_role": "둘째 아들",
+  "question": "자녀에게 들었던 말 중 기억에 남는 순간은?",
+  "receive_user": "최기섭",
+  "receive_role": "아버지",
+  "mediaPath": "gs://bucket/videos/ans_123.mp4",
+  "includeDownstream": true
+}
+```
+
+`answerId`에는 `answers.id`를 그대로 문자열로 실어 보낸다. AI API 스펙에 있는 별도 `jobId` 필드는 사용하지 않는다 — 식별자를 이원화하지 않고 `answerId` 하나로 요청과 콜백을 correlate한다.
+
+### `POST /api/v1/answers/ai-callback`
+
+AI 서버가 처리 완료/실패 시 호출하는 콜백이다. 프론트/클라이언트는 호출하지 않는다.
+
+성공 시 요청 본문 (AI 서버 pipelineResults 요약):
+
+```json
+{
+  "answerId": "123",
+  "transcript": "하는 과정에서 초등학교 때든...",
+  "segments": [{ "startMs": 0, "endMs": 20000, "text": "..." }],
+  "pipelineResults": {
+    "AI-003": { "diaryTitle": "...", "oneLineSummary": "..." },
+    "AI-004": { "representativeQuote": "..." },
+    "AI-005": { "emotionTags": ["담담함", "기록"] },
+    "AI-008": { "status": "completed" },
+    "AI-009": { "fourCutTitle": "..." }
+  }
+}
+```
+
+실패 시 요청 본문:
+
+```json
+{
+  "answerId": "123",
+  "transcript": "",
+  "warnings": ["stt_failed"],
+  "pipelineResults": {
+    "AI-008": { "status": "failed", "retryable": true, "failedStep": "stt" },
+    "AI-010": { "fallbackUsed": true, "retryable": true }
+  }
+}
+```
+
+처리:
+
+- `answerId`로 대상 `answers` row를 찾는다. 존재하지 않으면 `404`를 반환한다.
+- 성공(`pipelineResults.AI-008.status = completed`): ffmpeg으로 HLS 변환 후 GCS 업로드 → `video_clips` insert(`transcript`, `transcript_segments`, `title`=AI-003.diaryTitle, `one_line_summary`=AI-003.oneLineSummary, `quote`=AI-004.representativeQuote, `emotion_tags`=AI-005.emotionTags, `fourcut_title`=AI-009.fourCutTitle) → `video_clip_ai_results`에 `pipelineResults` 전체 snapshot insert → `answers.status = completed` 업데이트를 같은 트랜잭션으로 처리한다.
+- 실패(`pipelineResults.AI-008.status = failed`): `answers.status = failed`, `answers.ai_retryable`=AI-008.retryable, `answers.ai_fallback_used`=AI-010.fallbackUsed로 업데이트한다. `video_clips`는 생성하지 않는다.
+- 두 경우 모두 처리 후 Supabase Realtime Broadcast로 `family:{family_id}` 채널에 알린다.
+
+TODO: 이 엔드포인트는 AI 서버만 호출해야 하므로 인증(공유 시크릿 헤더 등)이 필요하다. 구체적인 인증 방식은 아직 미정이다.
+
 ## Clips
 
-- `GET /api/v1/clips`: 가족 + 날짜 단위 네컷 그리드 목록 조회. `family_id`, `DATE(created_at)` 기준으로 묶어서 반환하며, 각 항목에 `answer_id`, `status`(`submitted`/`processing`/`completed`/`failed`)와 `status = completed`일 때의 `thumbnail_url`을 포함한다.
+- `GET /api/v1/clips`: 가족 + 날짜 단위 네컷 그리드 목록 조회. `family_id`, `DATE(created_at)` 기준으로 묶어서 반환하며, 각 항목에 `answer_id`, `status`(`submitted`/`processing`/`completed`/`failed`), `thumbnail_url`을 포함한다. `thumbnail_url`은 답변 제출 직후 ffmpeg으로 생성되므로 `status`와 무관하게 항상 내려간다.
 
 ## Realtime
 

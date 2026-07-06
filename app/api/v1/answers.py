@@ -7,6 +7,12 @@ from app.api.dependencies import get_current_user
 from app.db.session import get_db
 from app.models.question_send import QuestionSend, QuestionSendStatus
 from app.models.user import User
+from app.schemas.answers import (
+    AnswerSubmitRequest,
+    AnswerSubmitResponse,
+    AnswerUploadUrlRequest,
+    AnswerUploadUrlResponse,
+)
 from app.schemas.question_loop import (
     QuestionUserSummary,
     ReadQuestionResponse,
@@ -14,16 +20,97 @@ from app.schemas.question_loop import (
     ReceivedQuestionItem,
     ReceivedQuestionsResponse,
 )
+from app.services.answer_service import (
+    AlreadyAnsweredError,
+    AnswerService,
+    NotRecipientError,
+    QuestionSendNotFoundError,
+    UnsupportedVideoMimeTypeError,
+)
 from app.services.question_loop_service import (
     QuestionLoopService,
     ReceivedQuestionNotFoundError,
 )
+from app.services.storage_service import StorageService
 
 router = APIRouter(prefix="/answers", tags=["answers"])
 
 
 def get_question_loop_service() -> QuestionLoopService:
     return QuestionLoopService()
+
+
+def get_storage_service() -> StorageService:
+    return StorageService()
+
+
+def get_answer_service(
+    storage_service: Annotated[StorageService, Depends(get_storage_service)],
+) -> AnswerService:
+    return AnswerService(storage_service=storage_service)
+
+
+@router.post(
+    "/upload-url",
+    response_model=AnswerUploadUrlResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_answer_upload_url(
+    payload: AnswerUploadUrlRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[AnswerService, Depends(get_answer_service)],
+) -> AnswerUploadUrlResponse:
+    try:
+        upload_url, expires_at = service.create_upload_url(
+            db,
+            user=current_user,
+            question_send_id=payload.question_send_id,
+            video_mime_type=payload.video_mime_type,
+        )
+    except QuestionSendNotFoundError as exc:
+        raise _not_found("Question send was not found") from exc
+    except NotRecipientError as exc:
+        raise _forbidden(str(exc)) from exc
+    except AlreadyAnsweredError as exc:
+        raise _conflict(str(exc)) from exc
+    except UnsupportedVideoMimeTypeError as exc:
+        raise _unsupported_media_type(str(exc)) from exc
+
+    return AnswerUploadUrlResponse(uploadUrl=upload_url, expiresAt=expires_at)
+
+
+@router.post("", response_model=AnswerSubmitResponse, status_code=status.HTTP_201_CREATED)
+def submit_answer(
+    payload: AnswerSubmitRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[AnswerService, Depends(get_answer_service)],
+) -> AnswerSubmitResponse:
+    try:
+        answer = service.submit_answer(
+            db,
+            user=current_user,
+            question_send_id=payload.question_send_id,
+            video_mime_type=payload.video_mime_type,
+            video_duration_seconds=payload.video_duration_seconds,
+            video_size_bytes=payload.video_size_bytes,
+        )
+    except QuestionSendNotFoundError as exc:
+        raise _not_found("Question send was not found") from exc
+    except NotRecipientError as exc:
+        raise _forbidden(str(exc)) from exc
+    except AlreadyAnsweredError as exc:
+        raise _conflict(str(exc)) from exc
+    except UnsupportedVideoMimeTypeError as exc:
+        raise _unsupported_media_type(str(exc)) from exc
+
+    return AnswerSubmitResponse(
+        answerId=answer.id,
+        questionSendId=answer.question_send_id,
+        status=answer.status,
+        submittedAt=answer.submitted_at,
+    )
 
 
 @router.get("/questions", response_model=ReceivedQuestionsResponse)
@@ -123,3 +210,15 @@ def _is_answered(question: QuestionSend) -> bool:
 
 def _not_found(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+
+def _forbidden(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
+def _conflict(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
+def _unsupported_media_type(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=detail)

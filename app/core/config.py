@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     kakao_client_secret: SecretStr | None = None
     kakao_redirect_uri: AnyUrl | None = None
     frontend_oauth_callback_url: AnyUrl | None = None
+    gcs_bucket_name: str | None = None
+    gcs_signed_url_expire_minutes: int = 15
+    gcs_signer_service_account: str | None = None
 
 
 @lru_cache
