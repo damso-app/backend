@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.api.v1.home import get_question_loop_service
 from app.core.config import Settings, get_settings
 from app.core.security import create_access_token
 from app.db.session import Base, get_db
@@ -20,6 +21,7 @@ from app.models.question_recommendation import (
 )
 from app.models.question_send import QuestionSend, QuestionSendSource, QuestionSendStatus
 from app.models.user import User, UserRole
+from app.services.question_loop_service import QuestionLoopService
 
 
 @pytest.fixture
@@ -463,3 +465,47 @@ def test_home_summary_returns_question_states_and_completed_count(
     assert body["latestSentQuestion"]["read"] is True
     assert body["latestSentQuestion"]["answered"] is True
     assert body["aiStatus"] is None
+
+
+def test_home_summary_completed_count_uses_korea_day_boundary(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    with session_factory() as db:
+        create_question_send(
+            db,
+            sender_user_id=int(ids["child_id"]),
+            recipient_user_id=int(ids["mother_id"]),
+            family_id=int(ids["family_id"]),
+            question_text="한국 시간 오늘 새벽 답변",
+            sent_at=datetime(2026, 7, 5, 15, 20, tzinfo=UTC),
+            answered_at=datetime(2026, 7, 5, 15, 30, tzinfo=UTC),
+            status=QuestionSendStatus.ANSWERED,
+        )
+        create_question_send(
+            db,
+            sender_user_id=int(ids["child_id"]),
+            recipient_user_id=int(ids["mother_id"]),
+            family_id=int(ids["family_id"]),
+            question_text="한국 시간 어제 답변",
+            sent_at=datetime(2026, 7, 5, 14, 50, tzinfo=UTC),
+            answered_at=datetime(2026, 7, 5, 14, 59, tzinfo=UTC),
+            status=QuestionSendStatus.ANSWERED,
+        )
+        db.commit()
+
+    app.dependency_overrides[get_question_loop_service] = lambda: QuestionLoopService(
+        now_provider=lambda: datetime(2026, 7, 5, 16, 0, tzinfo=UTC),
+    )
+
+    response = client.get(
+        "/api/v1/home/summary",
+        headers=auth_headers(str(ids["child_public_id"]), auth_settings),
+    )
+    app.dependency_overrides.pop(get_question_loop_service, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["todayCompletedCount"] == 1

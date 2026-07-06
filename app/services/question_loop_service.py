@@ -1,9 +1,10 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime
 
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
+from app.core.timezone import today_range_in_kst
 from app.models.family import Family, FamilyStatus
 from app.models.family_member import FamilyMember, FamilyMemberRole, FamilyMemberStatus
 from app.models.question_recommendation import (
@@ -53,6 +54,9 @@ class HomeSummary:
 
 
 class QuestionLoopService:
+    def __init__(self, *, now_provider=None) -> None:
+        self._now_provider = now_provider or (lambda: datetime.now(UTC))
+
     def get_home_summary(self, db: Session, *, user: User) -> HomeSummary:
         membership = self._active_membership(db, user_id=user.id)
         if membership is None:
@@ -82,12 +86,13 @@ class QuestionLoopService:
             excluding_user_id=user.id,
         )
 
-        today_start = datetime.combine(datetime.now(UTC).date(), time.min, tzinfo=UTC)
+        today_start, tomorrow_start = today_range_in_kst(self._now_provider())
         today_completed_count = db.scalar(
             select(func.count(QuestionSend.id)).where(
                 QuestionSend.family_id == family_id,
                 QuestionSend.answered_at.is_not(None),
                 QuestionSend.answered_at >= today_start,
+                QuestionSend.answered_at < tomorrow_start,
             )
         )
 

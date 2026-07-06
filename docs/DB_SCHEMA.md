@@ -11,6 +11,7 @@
 - `created_at`, `updated_at`은 변경 가능한 주요 테이블에 둔다.
 - 삭제 가능한 주요 콘텐츠에는 `deleted_at`을 둔다.
 - 상태 전이가 필요한 흐름에는 `status` 계열 ENUM을 둔다.
+- 날짜 단위 집계와 "오늘" 판단은 한국 시간(`Asia/Seoul`) 기준으로 계산한다.
 - 영상 원본(`answers.video_origin_url`)과 AI 가공본(`video_clips.hls_url`)은 분리해서 저장한다.
 - 네컷 그리드 목록은 `answers`를 `family_id`, `DATE(created_at)` 기준으로 `GROUP BY` 조회한다. 별도 그리드 테이블은 두지 않는다.
 - `video_clips`는 별도 `status` 컬럼을 두지 않는다. row 존재 여부가 곧 `answers.status = completed`를 의미하는 불변식이다. 백엔드는 `video_clips` insert와 `answers.status = completed` 업데이트를 같은 트랜잭션으로 처리해서, 그리드에는 `completed`로 보이는데 클립 조회가 실패하는 순간이 생기지 않게 한다.
