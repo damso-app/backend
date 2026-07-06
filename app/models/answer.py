@@ -66,6 +66,7 @@ class Answer(Base):
     video_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     video_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     thumbnail_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_job_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[AnswerStatus] = mapped_column(
         Enum(
             AnswerStatus,

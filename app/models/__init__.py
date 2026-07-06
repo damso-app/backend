@@ -12,6 +12,7 @@ from app.models.question_send import QuestionSend, QuestionSendSource, QuestionS
 from app.models.social_account import OAuthProvider, SocialAccount
 from app.models.user import User, UserRole, UserStatus
 from app.models.user_agreement import AgreementType, UserAgreement
+from app.models.video_clip import VideoClip, VideoClipAiResult
 
 __all__ = [
     "AgreementType",
@@ -37,4 +38,6 @@ __all__ = [
     "UserAgreement",
     "UserRole",
     "UserStatus",
+    "VideoClip",
+    "VideoClipAiResult",
 ]

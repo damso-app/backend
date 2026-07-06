@@ -12,7 +12,7 @@
 - 삭제 가능한 주요 콘텐츠에는 `deleted_at`을 둔다.
 - 상태 전이가 필요한 흐름에는 `status` 계열 ENUM을 둔다.
 - 날짜 단위 집계와 "오늘" 판단은 한국 시간(`Asia/Seoul`) 기준으로 계산한다.
-- 영상 원본(`answers.video_origin_url`)과 AI 가공본(`video_clips.hls_url`)은 분리해서 저장한다.
+- 영상 원본(`answers.video_origin_url`)과 AI 가공본(`video_clips.video_url`)은 분리해서 저장한다. 가공본은 AI 서버가 자막을 입힌 mp4를 직접 GCS에 업로드한 결과이며, HLS 변환은 하지 않는다(답변 영상 길이가 짧아 시그니드 URL로 mp4를 그대로 재생해도 충분하다고 판단).
 - 네컷 그리드 목록은 `answers`를 `family_id`, `DATE(created_at)` 기준으로 `GROUP BY` 조회한다. 별도 그리드 테이블은 두지 않는다.
 - `video_clips`는 별도 `status` 컬럼을 두지 않는다. row 존재 여부가 곧 `answers.status = completed`를 의미하는 불변식이다. 백엔드는 `video_clips` insert와 `answers.status = completed` 업데이트를 같은 트랜잭션으로 처리해서, 그리드에는 `completed`로 보이는데 클립 조회가 실패하는 순간이 생기지 않게 한다.
 - AI 처리 완료/실패는 폴링 API 대신 Supabase Realtime Broadcast(`family:{family_id}` 채널)로 알린다. 상세 payload는 `docs/API_DRAFT.md`의 Realtime 절을 따른다.
@@ -28,27 +28,37 @@
   → answers insert (status: submitted)
   → BackgroundTasks
       ├── ffmpeg 썸네일 추출 → GCS 업로드 → answers.thumbnail_url 업데이트
-      └── AI 서버 POST (fire and forget, mediaPath JSON 모드)
+      └── AI 서버 POST /api/v1/ai/jobs (fire and forget)
   → 201 반환
 
 AI 서버
-  → STT + LLM 파이프라인 (AI-002~AI-009). 영상 자체는 가공하지 않는다.
-  → 백엔드 콜백 POST /api/v1/answers/ai-callback (pipelineResults JSON)
+  → STT + LLM 파이프라인 (AI-002~AI-009) + VAD 기반 자막 입힌 편집 영상 생성
+  → 편집 영상을 미리 받은 editedVideoUploadUrl(signed PUT)로 GCS에 직접 업로드 (백엔드를 거치지 않음)
+  → 백엔드 콜백 POST /api/v1/answers/{answer_id}/ai-callback (pipelineResults JSON, Bearer callbackToken)
 
 백엔드 (콜백 수신)
-  → ffmpeg HLS 변환 → GCS 업로드
-  → video_clips insert (+ video_clip_ai_results에 원본 pipelineResults snapshot)
+  → video_clips insert (video_url = 결정적 경로, + video_clip_ai_results에 원본 pipelineResults snapshot)
   → answers.status = completed 업데이트
   → Supabase Realtime broadcast
 ```
 
 이전에는 GCP Pub/Sub을 경유하는 job 큐 방식을 검토했지만, 현재는 백엔드가 AI 서버에 직접 fire-and-forget POST를 보내고 AI 서버가 처리 완료 시 백엔드의 콜백 엔드포인트를 직접 호출하는 방식으로 단순화했다. Supabase에 AI 서버가 직접 write하는 경로는 없다 — 결과 전달은 오직 콜백 하나뿐이다.
 
-AI 서버 쪽 API(`docs`의 `DAMSO-AI-API` 명세) 기준으로 두 가지 요청 모드가 있는데(JSON Path Mode `mediaPath` vs Multipart Upload Mode `file`), 백엔드는 **JSON Path Mode(`mediaPath`)를 강제**한다. AI 개발자가 백엔드 연동 경험이 없어 백엔드가 계약을 주도적으로 정의하며, GCS 경로 문자열만 넘기고 실제 파일 바이트를 백엔드가 내려받아 재업로드하지 않는다.
+AI 서버 요청(`DAMSO-AI-API` 명세 `POST /api/v1/ai/jobs` 기준)은 아래 필드를 실어 보낸다. 원본 영상을 gs:// 경로로 직접 넘기지 않고, 백엔드가 발급한 **signed GET URL**(`mediaUrl`)로 넘긴다 — AI 서버가 우리 GCP 프로젝트 권한을 가질 필요가 없다.
 
-영상 가공(썸네일 추출, HLS 변환)은 AI 서버가 하지 않고 전량 백엔드가 ffmpeg으로 처리한다. 다만 구현 우선순위는 영상 업로드(`POST /api/v1/answers`, GCS 업로드 흐름)를 먼저 완성하고, AI 연동(BackgroundTask의 AI 서버 POST, 콜백 수신)은 그 다음 단계로 미룬다.
+- `answerId`: `answers.id`를 문자열로.
+- `jobId`: `"JOB_{answer_id}"` 형식. 백엔드가 결정적으로 만들어서 보내고, `answers.ai_job_id`에 저장한다. correlation의 기준은 여전히 `answer_id`이고(같은 값에서 파생), `jobId`는 AI 서버 쪽 참고/추적용이다.
+- `mediaUrl`: 원본 영상 signed GET URL.
+- `mediaDurationSeconds`: `answers.video_duration_seconds`.
+- `editedVideoUploadUrl`: 편집(자막 입힌) 영상을 AI 서버가 업로드할 signed PUT URL. 백엔드가 결정적 경로(`answers/{family_id}/{question_send_id}/edited.mp4`)로 미리 발급해서 같이 보낸다.
+- `callbackUrl`: `POST /api/v1/answers/{answer_id}/ai-callback` 형태로 answer 단위 경로를 백엔드가 만들어서 보낸다.
+- `callbackToken`: 백엔드가 발급한 토큰. AI 서버는 콜백 호출 시 `Authorization: Bearer {callbackToken}`으로 그대로 돌려주고, 백엔드는 이 토큰으로 콜백 요청을 검증한다.
 
-AI 서버 요청/콜백 모두 `answerId` 하나로 식별한다. AI API 스펙에 있는 별도 `jobId` 필드는 사용하지 않는다 — AI 처리 추적도 결국 `answer_id` 기준으로 하는 게 자연스러워서 식별자를 이원화하지 않기로 했다.
+AI 서버는 STT/LLM 처리 후 VAD(Voice Activity Detection)로 자막 세그먼트를 만들고 영상에 자막/질문을 입혀서, 그 결과를 우리가 미리 넘긴 `editedVideoUploadUrl`로 직접 업로드한다 — 편집 영상 바이트는 백엔드를 거치지 않는다. 답변 영상이 짧아 HLS 스트리밍 변환은 하지 않기로 했고, 백엔드는 그 결정적 경로를 그대로 `video_clips.video_url`에 저장한 뒤 조회 시점에 signed GET URL로 변환해서 내려준다.
+
+폴링(`GET /api/v1/ai/jobs/{jobId}?includeResult=false`)은 진행률/소요시간만 반환하며, 실제 결과는 원칙적으로 콜백으로만 온다. 프론트에 진행률 UI가 없으므로 이 폴링은 필수는 아니고, 콜백 유실 시 안전망(reconciliation)으로만 후보로 고려한다.
+
+구현 우선순위는 영상 업로드(`POST /api/v1/answers`, GCS 업로드 흐름)를 먼저 완성하고, AI 연동(BackgroundTask의 AI 서버 POST, 콜백 수신)은 그 다음 단계로 미룬다. 이 절의 계약은 AI 개발자 문서(`DAMSO-AI-API` 명세)와 대화로 확정한 내용이며, 실제 fire-and-forget 호출/콜백 수신 코드는 아직 구현하지 않았다.
 
 ## Tables
 
@@ -283,6 +293,7 @@ MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 s
 | video_size_bytes       | INTEGER       | N   | N                 | N      | Y        | 파일 크기                                                                                 |
 | thumbnail_url          | TEXT          | N   | N                 | N      | Y        | 제출 직후 BackgroundTasks에서 ffmpeg으로 추출. AI 처리 상태와 무관하게 네컷 그리드 표시용 |
 | status                 | answer_status | N   | N                 | N      | N        | 제출부터 AI 처리까지의 상태. `submitted`, `processing`, `completed`, `failed`             |
+| ai_job_id              | VARCHAR(100)  | N   | N                 | N      | Y        | AI 서버 요청에 실어 보내는 job 식별자. `"JOB_{answer_id}"` 형식으로 채움                  |
 | ai_retryable           | BOOLEAN       | N   | N                 | N      | N        | AI 콜백이 보고한 재시도 가능 여부. 기본값 `false`                                         |
 | ai_fallback_used       | BOOLEAN       | N   | N                 | N      | N        | AI 콜백이 보고한 fallback 처리 사용 여부. 기본값 `false`                                  |
 | ai_input_context       | JSONB         | N   | N                 | N      | Y        | submit 시점에 조립해 AI 서버 요청에 사용한 interviewContext snapshot                      |
@@ -305,20 +316,21 @@ MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 s
   "send_role": "둘째 아들",
   "question": "자녀에게 들었던 말 중 기억에 남는 순간은?",
   "receive_user": "최기섭",
-  "receive_role": "아버지",
-  "mediaPath": "gs://bucket/videos/ans_001.mp4"
+  "receive_role": "아버지"
 }
 ```
 
+영상 참조(`mediaUrl`, `editedVideoUploadUrl`)는 여기 저장하지 않는다. signed URL이라 만료되므로, AI 서버로 보내는 시점(BackgroundTask)에 `answers.video_origin_url`을 기반으로 그때그때 새로 발급한다.
+
 ### video_clips
 
-목적: 답변 영상의 AI 가공 결과 중 프론트가 바로 사용하는 필드(HLS 스트리밍 URL, 전사, 제목, 명대사, 요약, 감정 태그)를 저장한다. `status` 컬럼 없음 — row 존재 여부가 곧 `completed`. 썸네일은 제출 직후 `answers.thumbnail_url`에 이미 저장되므로 여기서는 중복 저장하지 않는다.
+목적: 답변 영상의 AI 가공 결과 중 프론트가 바로 사용하는 필드(편집 영상 URL, 전사, 제목, 명대사, 요약, 감정 태그)를 저장한다. `status` 컬럼 없음 — row 존재 여부가 곧 `completed`. 썸네일은 제출 직후 `answers.thumbnail_url`에 이미 저장되므로 여기서는 중복 저장하지 않는다.
 
 | Column              | Type         | PK  | FK         | Unique | Nullable | Notes                                                          |
 | ------------------- | ------------ | --- | ---------- | ------ | -------- | -------------------------------------------------------------- |
 | id                  | BIGINT       | Y   | N          | Y      | N        | 내부 PK                                                        |
 | answer_id           | BIGINT       | N   | answers.id | Y      | N        | 원본 답변. MVP는 답변당 클립 1개                               |
-| hls_url             | TEXT         | N   | N          | N      | Y        | 백엔드가 AI 콜백 수신 후 ffmpeg으로 변환한 스트리밍용 영상 URL |
+| video_url           | TEXT         | N   | N          | N      | Y        | AI 서버가 자막 입힌 뒤 GCS에 직접 업로드한 편집 영상 경로. HLS 변환 없이 mp4를 그대로 저장(조회 시 signed GET URL로 변환) |
 | transcript          | TEXT         | N   | N          | N      | Y        | 영상/음성에서 추출한 전체 전사                                 |
 | transcript_segments | JSONB        | N   | N          | N      | Y        | 전사 segments. 영상 자막 싱크용                                |
 | title               | VARCHAR(200) | N   | N          | N      | Y        | 클립 제목                                                      |
@@ -374,4 +386,5 @@ MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 s
 - `video_clips.transcript`, `quote`, `one_line_summary`, `emotion_tags` 구조를 실제 프롬프트 구현 시 확정해야 한다.
 - 가족방 탈퇴/삭제 정책과 보존 기간을 확정해야 한다.
 - `video_clip_ai_results.ai_raw_response`의 실제 pipelineResults 스키마를 AI 서버 스펙 확정 후 반영해야 한다.
-- 영상 업로드(`POST /api/v1/answers`, GCS 업로드 흐름) 구현을 먼저 완료한 뒤 AI 연동(BackgroundTask의 AI 서버 POST, `POST /api/v1/answers/ai-callback` 수신)을 진행한다.
+- 영상 업로드(`POST /api/v1/answers`, GCS 업로드 흐름) 구현을 먼저 완료한 뒤 AI 연동(BackgroundTask의 AI 서버 POST, `POST /api/v1/answers/{answer_id}/ai-callback` 수신)을 진행한다.
+- `POST /api/v1/answers/{answer_id}/ai-callback`의 `callbackToken` 검증 로직(발급/저장/만료 방식)을 실제 구현 시 확정해야 한다.

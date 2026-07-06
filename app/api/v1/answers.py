@@ -13,6 +13,7 @@ from app.schemas.answers import (
     AnswerUploadUrlRequest,
     AnswerUploadUrlResponse,
 )
+from app.schemas.clips import ClipDetailResponse
 from app.schemas.question_loop import (
     QuestionUserSummary,
     ReadQuestionResponse,
@@ -26,6 +27,12 @@ from app.services.answer_service import (
     NotRecipientError,
     QuestionSendNotFoundError,
     UnsupportedVideoMimeTypeError,
+)
+from app.services.clip_service import (
+    ActiveFamilyRequiredError,
+    AnswerNotFoundError,
+    ClipNotReadyError,
+    ClipService,
 )
 from app.services.question_loop_service import (
     QuestionLoopService,
@@ -48,6 +55,12 @@ def get_answer_service(
     storage_service: Annotated[StorageService, Depends(get_storage_service)],
 ) -> AnswerService:
     return AnswerService(storage_service=storage_service)
+
+
+def get_clip_service(
+    storage_service: Annotated[StorageService, Depends(get_storage_service)],
+) -> ClipService:
+    return ClipService(storage_service=storage_service)
 
 
 @router.post(
@@ -110,6 +123,41 @@ def submit_answer(
         questionSendId=answer.question_send_id,
         status=answer.status,
         submittedAt=answer.submitted_at,
+    )
+
+
+@router.get("/{answer_id}/clip", response_model=ClipDetailResponse)
+def get_answer_clip(
+    answer_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[ClipService, Depends(get_clip_service)],
+) -> ClipDetailResponse:
+    try:
+        answer, video_clip = service.get_clip_detail(
+            db,
+            user=current_user,
+            answer_id=answer_id,
+        )
+    except ActiveFamilyRequiredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except (AnswerNotFoundError, ClipNotReadyError) as exc:
+        raise _not_found("Clip was not found") from exc
+
+    return ClipDetailResponse(
+        answerId=answer.id,
+        videoUrl=service.resolve_video_url(video_clip),
+        thumbnailUrl=service.resolve_thumbnail_url(answer),
+        transcript=video_clip.transcript,
+        transcriptSegments=video_clip.transcript_segments,
+        title=video_clip.title,
+        quote=video_clip.quote,
+        oneLineSummary=video_clip.one_line_summary,
+        emotionTags=video_clip.emotion_tags,
+        fourcutTitle=video_clip.fourcut_title,
     )
 
 

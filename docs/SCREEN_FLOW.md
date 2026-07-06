@@ -52,4 +52,4 @@
 
 - 사용자 행동: 그리드에서 컷을 탭해 바텀시트 또는 상세에서 영상 재생, 명대사, 요약을 확인한다.
 - API 후보: `GET /api/v1/answers/{answer_id}/clip`
-- 저장 데이터: video_clip id, answer id, thumbnail url, hls url, transcript, title, quote, summary, emotion tags.
+- 저장 데이터: answer id, thumbnail url, video url, transcript, title, quote, one line summary, emotion tags. `video_clip`의 내부 PK는 API로 노출하지 않는다.
