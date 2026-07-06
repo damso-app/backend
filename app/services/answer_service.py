@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models.answer import Answer, AnswerStatus
+from app.models.family_member import FamilyMember, FamilyMemberRole
 from app.models.question_send import QuestionSend, QuestionSendStatus
 from app.models.user import User
 from app.services.storage_service import StorageService
@@ -14,6 +15,12 @@ _MIME_TYPE_EXTENSIONS = {
     "video/quicktime": "mov",
     "video/webm": "webm",
     "video/3gpp": "3gp",
+}
+
+_ROLE_LABELS = {
+    FamilyMemberRole.CHILD: "자녀",
+    FamilyMemberRole.MOTHER: "엄마",
+    FamilyMemberRole.FATHER: "아빠",
 }
 
 
@@ -97,6 +104,7 @@ class AnswerService:
             video_size_bytes=video_size_bytes,
             status=AnswerStatus.SUBMITTED,
             submitted_at=now,
+            ai_input_context=self._build_ai_input_context(db, question_send=question_send),
         )
         db.add(answer)
 
@@ -129,6 +137,40 @@ class AnswerService:
             raise AlreadyAnsweredError("This question has already been answered")
 
         return question_send
+
+    def _build_ai_input_context(
+        self,
+        db: Session,
+        *,
+        question_send: QuestionSend,
+    ) -> dict[str, str | None]:
+        return {
+            "send_user": question_send.sender.display_name,
+            "send_role": self._member_role_label(
+                db,
+                family_id=question_send.family_id,
+                user_id=question_send.sender_user_id,
+            ),
+            "question": question_send.question_text,
+            "receive_user": question_send.recipient.display_name,
+            "receive_role": self._member_role_label(
+                db,
+                family_id=question_send.family_id,
+                user_id=question_send.recipient_user_id,
+            ),
+        }
+
+    @staticmethod
+    def _member_role_label(db: Session, *, family_id: int, user_id: int) -> str | None:
+        member_role = db.scalar(
+            select(FamilyMember.member_role)
+            .where(
+                FamilyMember.family_id == family_id,
+                FamilyMember.user_id == user_id,
+            )
+            .limit(1)
+        )
+        return _ROLE_LABELS.get(member_role) if member_role is not None else None
 
     @staticmethod
     def _object_path(*, family_id: int, question_send_id: int, video_mime_type: str) -> str:

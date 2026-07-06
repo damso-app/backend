@@ -313,12 +313,14 @@ MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 s
 ```json
 {
   "send_user": "최대현",
-  "send_role": "둘째 아들",
+  "send_role": "자녀",
   "question": "자녀에게 들었던 말 중 기억에 남는 순간은?",
   "receive_user": "최기섭",
-  "receive_role": "아버지"
+  "receive_role": "아빠"
 }
 ```
+
+`send_role`/`receive_role`은 `family_members.member_role`(`child`/`mother`/`father`)을 각각 `자녀`/`엄마`/`아빠`로 매핑한 값이다. 가족 내 서열(예: 둘째, 첫째)은 구분하지 않는다.
 
 영상 참조(`mediaUrl`, `editedVideoUploadUrl`)는 여기 저장하지 않는다. signed URL이라 만료되므로, AI 서버로 보내는 시점(BackgroundTask)에 `answers.video_origin_url`을 기반으로 그때그때 새로 발급한다.
 
