@@ -24,6 +24,7 @@ class Family(Base):
     __tablename__ = "families"
     __table_args__ = (
         Index("ux_families_public_id", "public_id", unique=True),
+        Index("ux_families_invite_code", "invite_code", unique=True),
         Index("ix_families_created_by_user_id", "created_by_user_id"),
         Index("ix_families_status", "status"),
     )
@@ -31,6 +32,7 @@ class Family(Base):
     id: Mapped[int] = mapped_column(BIGINT_ID, primary_key=True, autoincrement=True)
     public_id: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    invite_code: Mapped[str | None] = mapped_column(String(7), nullable=True)
     created_by_user_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey("users.id"),

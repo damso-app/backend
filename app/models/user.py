@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from app.models.family_member import FamilyMember
     from app.models.oauth_login_code import OAuthLoginCode
     from app.models.social_account import SocialAccount
+    from app.models.user_agreement import UserAgreement
 
 
 BIGINT_ID = BigInteger().with_variant(Integer, "sqlite")
@@ -19,7 +20,8 @@ BIGINT_ID = BigInteger().with_variant(Integer, "sqlite")
 
 class UserRole(StrEnum):
     CHILD = "child"
-    PARENT = "parent"
+    MOTHER = "mother"
+    FATHER = "father"
 
 
 class UserStatus(StrEnum):
@@ -86,6 +88,10 @@ class User(Base):
         foreign_keys="Family.created_by_user_id",
     )
     family_members: Mapped[list["FamilyMember"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    agreements: Mapped[list["UserAgreement"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )
