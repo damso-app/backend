@@ -83,7 +83,7 @@ class KakaoAuthService:
                 kakao_id=kakao_id,
                 nickname=self._optional_str(profile.get("nickname")),
                 email=self._optional_str(kakao_account.get("email")),
-                profile_image_url=self._optional_str(profile.get("profile_image_url")),
+                profile_image_url=self._profile_image_url(profile),
             )
         except ValidationError as exc:
             raise KakaoAuthError("Kakao userinfo response is invalid") from exc
@@ -152,6 +152,12 @@ class KakaoAuthService:
         if isinstance(value, str) and value:
             return value
         return None
+
+    @classmethod
+    def _profile_image_url(cls, profile: dict[str, Any]) -> str | None:
+        return cls._optional_str(profile.get("profile_image_url")) or cls._optional_str(
+            profile.get("thumbnail_image_url")
+        )
 
     @staticmethod
     def _required_kakao_id(value: Any) -> str:

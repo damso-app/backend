@@ -159,6 +159,56 @@ async def test_get_user_info_success() -> None:
 
 
 @pytest.mark.anyio
+async def test_get_user_info_uses_thumbnail_image_url_as_fallback() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "id": 123456789,
+                    "kakao_account": {
+                        "profile": {
+                            "nickname": "Damso User",
+                            "thumbnail_image_url": "https://example.com/thumb.jpg",
+                        },
+                    },
+                },
+            )
+        )
+    ) as client:
+        service = KakaoAuthService(make_settings(), client=client)
+
+        user_info = await service.get_user_info(MOCK_PROVIDER_BEARER)
+
+    assert str(user_info.profile_image_url) == "https://example.com/thumb.jpg"
+
+
+@pytest.mark.anyio
+async def test_get_user_info_prefers_profile_image_url_over_thumbnail() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "id": 123456789,
+                    "kakao_account": {
+                        "profile": {
+                            "profile_image_url": "https://example.com/profile.jpg",
+                            "thumbnail_image_url": "https://example.com/thumb.jpg",
+                        },
+                    },
+                },
+            )
+        )
+    ) as client:
+        service = KakaoAuthService(make_settings(), client=client)
+
+        user_info = await service.get_user_info(MOCK_PROVIDER_BEARER)
+
+    assert str(user_info.profile_image_url) == "https://example.com/profile.jpg"
+
+
+@pytest.mark.anyio
 async def test_get_user_info_allows_nullable_profile_fields() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"id": 123456789}))
