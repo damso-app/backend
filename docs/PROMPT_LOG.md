@@ -1,5 +1,42 @@
 # Prompt Log
 
+## 2026-07-06 한국 시간 기준 날짜 계산 반영
+
+### 요청 프롬프트 요약
+
+프로젝트 로직에서 시간 계산이 필요한 부분이 있으면 한국 시간 기준으로 계산하도록 반영해 달라고 요청했다.
+
+### 수정 파일
+
+- `app/core/timezone.py`
+- `app/services/question_loop_service.py`
+- `tests/test_timezone.py`
+- `tests/test_question_answer_loop.py`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- 한국 시간대 상수 `Asia/Seoul`과 KST 날짜 범위를 UTC 범위로 변환하는 helper를 추가했다.
+- 홈 요약의 `todayCompletedCount`를 UTC 날짜가 아니라 한국 시간 기준 오늘 범위로 계산하도록 변경했다.
+- 토큰 만료 같은 보안 절대시간 계산은 UTC 기준을 유지했다.
+- 이벤트 시각 저장은 timezone-aware timestamp로 유지하고, 날짜 단위 비즈니스 집계만 KST 기준으로 계산한다.
+
+### 검증 결과
+
+```bash
+pytest
+# 73 passed, 1 warning
+
+ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-06 질문/답변 루프 MVP 1차 구현
 
 ### 요청 프롬프트 요약

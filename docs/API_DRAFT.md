@@ -449,7 +449,7 @@ Authorization: Bearer <Damso access token>
 }
 ```
 
-`todayCompletedCount`는 `question_sends.answered_at`이 오늘인 질문-답변 쌍의 개수다. 실제 영상 업로드와 AI 분석 실행은 후속 기능이므로 이번 범위에서는 `aiStatus = null`일 수 있다.
+`todayCompletedCount`는 한국 시간(`Asia/Seoul`) 기준 오늘에 `question_sends.answered_at`이 포함되는 질문-답변 쌍의 개수다. 실제 영상 업로드와 AI 분석 실행은 후속 기능이므로 이번 범위에서는 `aiStatus = null`일 수 있다.
 
 ## Questions
 
