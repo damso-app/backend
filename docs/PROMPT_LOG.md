@@ -1,5 +1,42 @@
 # Prompt Log
 
+## 2026-07-06 답변 제출 시 `ai_input_context` 조립 구현
+
+### 요청 프롬프트 요약
+
+이슈 [#15](https://github.com/damso-app/backend/issues/15)로 `feat/AiInputContext-#15` 브랜치를 만들어, `answers.ai_input_context` 컬럼을 채우는 로직을 구현하도록 요청했다. AI 서버로 보낼 인터뷰 컨텍스트의 `send_role`/`receive_role`은 가족 내 서열(예: "둘째 아들") 없이 `자녀`/`엄마`/`아빠` 세 가지로만 매핑하면 된다고 확인했다.
+
+### 생성/수정 파일
+
+- `app/services/answer_service.py`
+- `tests/test_answers_upload.py`
+- `docs/DB_SCHEMA.md`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `AnswerService._build_ai_input_context()`를 추가해 `submit_answer` 시점에 `QuestionSend`의 발신자/수신자 `User.display_name`과 `question_text`, 그리고 `FamilyMember.member_role`을 조회해 `send_user`/`send_role`/`question`/`receive_user`/`receive_role`을 조립하고 `answers.ai_input_context`에 저장한다.
+- `member_role`(`child`/`mother`/`father`) → 한글 라벨(`자녀`/`엄마`/`아빠`) 매핑 테이블(`_ROLE_LABELS`)을 추가했다. 가족 내 서열은 구분하지 않는다.
+- `docs/DB_SCHEMA.md`, `docs/API_DRAFT.md`의 `ai_input_context`/AI 요청 예시를 실제 구현 값(`자녀`/`엄마`/`아빠`)으로 정정했다(기존엔 AI 개발자 문서의 예시 `"둘째 아들"`/`"아버지"`를 그대로 옮겨놔서 실제 구현과 달랐다).
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 86 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260706_0010 (head)
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-06 AI 연동 계약 문서 정합성 수정 (`ai_job_id`, `mediaUrl`, 콜백)
 
 ### 요청 프롬프트 요약

@@ -12,6 +12,7 @@ from app.core.config import Settings, get_settings
 from app.core.security import create_access_token
 from app.db.session import Base, get_db
 from app.main import app
+from app.models.answer import Answer
 from app.models.family import Family, FamilyStatus
 from app.models.family_member import FamilyMember, FamilyMemberRole, FamilyMemberStatus
 from app.models.question_recommendation import QuestionDepth
@@ -203,6 +204,44 @@ def test_upload_url_and_submit_answer_happy_path(
         )
         assert question_send.status == QuestionSendStatus.ANSWERED
         assert question_send.answered_at is not None
+
+
+def test_submit_answer_assembles_ai_input_context(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    question_send_id = create_question_send(
+        session_factory,
+        sender_user_id=int(ids["child_id"]),
+        recipient_user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+
+    submit_response = client.post(
+        "/api/v1/answers",
+        headers=auth_headers(str(ids["mother_public_id"]), auth_settings),
+        json={
+            "questionSendId": question_send_id,
+            "videoMimeType": "video/mp4",
+            "videoDurationSeconds": 10,
+            "videoSizeBytes": 1024,
+        },
+    )
+    assert submit_response.status_code == 201
+
+    with session_factory() as db:
+        answer = db.scalar(
+            select(Answer).where(Answer.question_send_id == question_send_id)
+        )
+        assert answer.ai_input_context == {
+            "send_user": ids["child_public_id"],
+            "send_role": "자녀",
+            "question": "요즘 가장 마음에 남는 일은 무엇인가요?",
+            "receive_user": ids["mother_public_id"],
+            "receive_role": "엄마",
+        }
 
 
 def test_upload_url_rejects_non_recipient(

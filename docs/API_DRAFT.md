@@ -732,10 +732,10 @@ POST https://{ai-server-host}/api/v1/ai/jobs
   "answerId": "123",
   "questionId": "10",
   "send_user": "최대현",
-  "send_role": "둘째 아들",
+  "send_role": "자녀",
   "question": "자녀에게 들었던 말 중 기억에 남는 순간은?",
   "receive_user": "최기섭",
-  "receive_role": "아버지",
+  "receive_role": "아빠",
   "mediaUrl": "https://storage.googleapis.com/damso-videos/answers/1/123/original.mp4?X-Goog-Algorithm=...",
   "mediaDurationSeconds": 39.9,
   "editedVideoUploadUrl": "https://storage.googleapis.com/damso-videos/answers/1/123/edited.mp4?X-Goog-Algorithm=...",
@@ -745,7 +745,7 @@ POST https://{ai-server-host}/api/v1/ai/jobs
 }
 ```
 
-`answerId`에는 `answers.id`를 그대로 문자열로 실어 보낸다. `jobId`는 `"JOB_{answer_id}"` 형식으로 백엔드가 만들어서 보내고 `answers.ai_job_id`에 저장하지만, correlation의 기준은 여전히 `answer_id`다(`jobId`는 같은 값에서 파생된 AI 서버 쪽 참고/추적용이라 별도로 이원화한 식별자는 아니다). `callbackToken`은 백엔드가 발급해서 보내고, AI 서버는 콜백 호출 시 `Authorization: Bearer {callbackToken}`으로 그대로 돌려준다.
+`answerId`에는 `answers.id`를 그대로 문자열로 실어 보낸다. `jobId`는 `"JOB_{answer_id}"` 형식으로 백엔드가 만들어서 보내고 `answers.ai_job_id`에 저장하지만, correlation의 기준은 여전히 `answer_id`다(`jobId`는 같은 값에서 파생된 AI 서버 쪽 참고/추적용이라 별도로 이원화한 식별자는 아니다). `callbackToken`은 백엔드가 발급해서 보내고, AI 서버는 콜백 호출 시 `Authorization: Bearer {callbackToken}`으로 그대로 돌려준다. `send_user`/`send_role`/`question`/`receive_user`/`receive_role`은 답변 제출 시점에 `AnswerService`가 조립해 `answers.ai_input_context`에 저장해둔 값을 그대로 실어 보낸다. `send_role`/`receive_role`은 `family_members.member_role`을 `자녀`/`엄마`/`아빠`로 매핑한 값이며, 가족 내 서열은 구분하지 않는다.
 
 AI 서버는 `GET /api/v1/ai/jobs/{jobId}?includeResult=false` 폴링으로 진행률/소요시간을 조회할 수 있게 해주지만, 실제 결과는 원칙적으로 콜백으로만 온다. 프론트에 진행률 UI가 없어 이 폴링은 필수는 아니며, 콜백 유실 시 안전망(reconciliation)으로만 후보로 고려한다.
 
