@@ -17,3 +17,9 @@ def kst_date_range(day: date) -> tuple[datetime, datetime]:
     start_kst = datetime.combine(day, time.min, tzinfo=KST)
     end_kst = start_kst + timedelta(days=1)
     return start_kst.astimezone(UTC), end_kst.astimezone(UTC)
+
+
+def to_kst_date(moment: datetime) -> date:
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(KST).date()

@@ -1,5 +1,113 @@
 # Prompt Log
 
+## 2026-07-06 AI 연동 계약 문서 정합성 수정 (`ai_job_id`, `mediaUrl`, 콜백)
+
+### 요청 프롬프트 요약
+
+`feat/ClipGrid-#13` 구현 방향을 리뷰(deep-reasoner)로 검토받았는데, `answers.ai_job_id` 컬럼이 `docs/DB_SCHEMA.md`/`docs/ERD.md`/`docs/API_DRAFT.md` 세 문서의 "jobId 필드는 안 쓴다"는 서술과 정면으로 모순된다는 지적을 받았다. 마침 AI 개발자가 Notion `DAMSO-AI-API` 문서의 "API 2: 가공 영상 후처리" 섹션을 채워서, 편집 영상 업로드 방식(`editedVideoUploadUrl`)이 우리 제안대로 확정된 것도 같이 확인했다. `job_id`/`ai_job_id` 네이밍을 통일하고 컬럼은 유지하는 방향으로 정리해 달라고 요청했다.
+
+### 생성/수정 파일
+
+- `docs/DB_SCHEMA.md`
+- `docs/ERD.md`
+- `docs/API_DRAFT.md`
+- `docs/SCREEN_FLOW.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `answers` 테이블 정의(DB_SCHEMA.md)와 `ANSWERS` 엔티티(ERD.md)에 빠져있던 `ai_job_id` 컬럼을 추가했다.
+- "jobId 필드는 사용하지 않는다"는 세 문서의 모순된 서술을 전부 걷어내고, `jobId`(`"JOB_{answer_id}"` 형식, `answers.ai_job_id`에 저장)와 `answerId`(correlation 기준, BIGINT)의 역할을 명확히 구분해서 다시 썼다.
+- AI 서버 요청 필드를 실제 확정된 대로 갱신했다: `mediaPath`(gs:// 경로) → `mediaUrl`(signed GET URL), `mediaDurationSeconds`, `editedVideoUploadUrl`(signed PUT URL, AI 개발자가 API 2에서 이 방식으로 확정), `callbackUrl`(`POST /api/v1/answers/{answer_id}/ai-callback`로 경로에 식별자 포함), `callbackToken`(백엔드 발급, `Authorization: Bearer`로 콜백 인증).
+- `POST /api/v1/answers/ai-callback`(flat 엔드포인트)로 되어 있던 모든 언급을 `POST /api/v1/answers/{answer_id}/ai-callback`(경로 기반)으로 통일했다(DB_SCHEMA.md, ERD.md, API_DRAFT.md의 다이어그램·bullet·요청 예시 전부).
+- 폴링(`GET /api/v1/ai/jobs/{jobId}?includeResult=false`)이 진행률/소요시간용이며 콜백이 메인이라는 내용을 DB_SCHEMA.md/API_DRAFT.md에 명시했다.
+- `answers.ai_input_context` 구조 예시에서 만료되는 signed URL을 스냅샷에 저장하는 것처럼 보이던 `mediaPath` 필드를 제거하고, 영상 참조는 전송 시점에 새로 발급한다는 설명을 추가했다.
+- `docs/SCREEN_FLOW.md`의 "컷 상세" 저장 데이터 목록에 남아있던 "hls url" 표현을 "video url"로 정정했다.
+
+### 사람이 확인할 포인트
+
+- AI 개발자 요청 예시에 있던 중복 필드(`editUrl`)는 AI 개발자 쪽에서 정리 완료(사용자 확인).
+- `callbackToken` 발급/저장/검증 로직 자체는 아직 미구현이며, DB_SCHEMA.md TODO로 남겨뒀다.
+- 실제 fire-and-forget 호출, `ai-callback` 수신 라우트, `callbackToken` 검증 코드는 이번 브랜치 범위 밖이며 여전히 미구현이다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 85 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+ruby -e 'ARGV.each do |path| s=File.read(path); fences=s.scan(/^```/).size; abort "#{path}: unbalanced fences" unless fences.even?; puts "#{path}: markdown fences balanced (#{fences})"; end' docs/DB_SCHEMA.md docs/ERD.md docs/API_DRAFT.md docs/SCREEN_FLOW.md
+# 전부 balanced 확인
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-06 네컷 그리드/클립 상세 조회 구현
+
+### 요청 프롬프트 요약
+
+이슈 [#13](https://github.com/damso-app/backend/issues/13)로 `feat/ClipGrid-#13` 브랜치를 새로 만들어, AI 연동과 별개로 네컷 그리드(`GET /api/v1/clips`)와 클립 상세(`GET /api/v1/answers/{answer_id}/clip`) 조회를 먼저 구현하도록 요청했다. `video_clips`/`video_clip_ai_results` 테이블이 없어 같이 추가하고, 작업을 여러 단계로 나눠 단계마다 확인받고 진행했다. 진행 중 AI 개발자의 최신 Notion 문서를 다시 확인하면서 답변 영상이 짧아 HLS 스트리밍 변환이 불필요하다고 판단해 `video_clips.hls_url`을 `video_url`로 바꾸고 mp4를 signed GET URL로 그대로 재생하는 방향으로 변경했다. AI 연동 계약(콜백 URL/토큰, `mediaUrl`, `jobId` 등)도 함께 논의했지만 이번 브랜치 범위 밖이라 문서 반영은 미루고 메모리에만 정리했다. 다만 `answers.ai_job_id` 컬럼은 이 방향(향후 AI 연동에서 job_id를 살려 쓰기로 함)에 맞춰 이번에 미리 추가했다.
+
+### 생성/수정 파일
+
+- `app/models/video_clip.py`
+- `app/models/answer.py`
+- `app/models/__init__.py`
+- `alembic/versions/20260706_0009_create_video_clips_tables.py`
+- `alembic/versions/20260706_0010_add_answers_ai_job_id.py`
+- `app/core/timezone.py`
+- `app/services/storage_service.py`
+- `app/schemas/clips.py`
+- `app/services/clip_service.py`
+- `app/api/v1/clips.py`
+- `app/api/v1/answers.py`
+- `app/main.py`
+- `tests/test_clips.py`
+- `docs/DB_SCHEMA.md`
+- `docs/ERD.md`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `video_clips`(`answer_id` FK, `video_url`, `transcript`, `transcript_segments`, `title`, `quote`, `one_line_summary`, `emotion_tags`, `fourcut_title`), `video_clip_ai_results`(`video_clip_id` FK, `ai_raw_response`) 테이블/모델을 신규 추가했다.
+- `answers.ai_job_id`(nullable) 컬럼을 추가했다. AI 연동 시 `"JOB_{answer_id}"` 형식으로 채울 예정이며, 이번 범위에서는 값이 안 들어간다.
+- `video_clips.hls_url`을 `video_url`로 바꾸고, HLS 변환 없이 mp4를 그대로 저장/재생하는 방향으로 파이프라인 설명을 갱신했다(`docs/DB_SCHEMA.md`, `docs/ERD.md`, `docs/API_DRAFT.md`의 AI 처리 흐름/콜백 절).
+- `StorageService.generate_read_url()`을 추가해 저장된 `gs://` 경로를 조회 시점에 signed GET URL로 변환한다.
+- `app/core/timezone.py`에 `to_kst_date()`를 추가해 그리드 그룹핑에 재사용했다.
+- `ClipService.get_grid()`: 현재 사용자의 활성 가족에 속한 `answers`를 한국 시간(KST) 날짜 기준으로 그룹핑해서 반환한다. `thumbnail_url`은 `status`와 무관하게 값이 있으면 항상 signed URL로 변환해 내려준다.
+- `ClipService.get_clip_detail()`: `answer_id`가 현재 사용자의 활성 가족 소속인지 확인(답변 제출자가 아니어도 같은 가족이면 조회 가능)하고, `video_clips`가 없으면(AI 처리 미완료) 404를 반환한다.
+- `GET /api/v1/clips`(신규 `app/api/v1/clips.py`), `GET /api/v1/answers/{answer_id}/clip`(`app/api/v1/answers.py`에 추가)을 구현하고 `app/main.py`에 라우터를 등록했다.
+- `docs/API_DRAFT.md`에 두 엔드포인트의 실제 요청/응답 예시와 에러 케이스를 문서화했다.
+
+### 사람이 확인할 포인트
+
+- AI 연동 관련 세부 계약(콜백 URL 경로에 식별자 포함, `callbackToken` 인증, `mediaUrl`/`editedVideoUploadUrl`, `jobId` 형식)은 AI 개발자 최신 문서를 기준으로 대화로 정리했지만 문서에는 아직 반영하지 않았다. 실제 AI 연동 브랜치 작업 시 반영해야 한다.
+- "가공 영상 처리" 방식(편집 영상을 AI가 어떻게 업로드/전달할지)은 AI 개발자 쪽 스펙이 아직 비어있어 확인이 더 필요하다.
+- 실제 Supabase DB에 이번 마이그레이션들(`20260706_0009`, `20260706_0010`)이 아직 적용되지 않았다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 85 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260706_0010 (head)
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-06 영상 업로드(answers) 테스트 작성
 
 ### 요청 프롬프트 요약
