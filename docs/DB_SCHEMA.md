@@ -1,6 +1,6 @@
 # Damso DB Schema v0.1
 
-이 문서는 Damso MVP ERD를 테이블 설계 초안으로 풀어 쓴 문서다. 현재 `users`, `social_accounts`, `oauth_login_codes`, `families`, `family_members`는 인증/온보딩 MVP 최소 범위로 SQLAlchemy 모델과 Alembic migration을 작성했고, 나머지 테이블은 아직 설계 초안이다.
+이 문서는 Damso MVP ERD를 테이블 설계 초안으로 풀어 쓴 문서다. 현재 `users`, `social_accounts`, `oauth_login_codes`, `user_agreements`, `families`, `family_members`, `question_recommendations`, `question_sends`는 SQLAlchemy 모델과 Alembic migration을 작성했고, 나머지 테이블은 아직 설계 초안이다.
 
 ## Global Rules
 
@@ -22,17 +22,18 @@
 
 목적: Damso 내부 사용자 프로필과 역할 선택 상태를 저장한다.
 
-| Column           | Type         | PK  | FK  | Unique | Nullable | Notes                                  |
-| ---------------- | ------------ | --- | --- | ------ | -------- | -------------------------------------- |
-| id               | BIGINT       | Y   | N   | Y      | N        | 내부 PK                                |
-| public_id        | VARCHAR(32)  | N   | N   | Y      | N        | 외부 노출용 사용자 식별자              |
-| display_name     | VARCHAR(100) | N   | N   | N      | Y        | Kakao 프로필 또는 사용자가 수정한 이름 |
-| role             | user_role    | N   | N   | N      | Y        | `child`, `parent`                      |
-| status           | user_status  | N   | N   | N      | N        | 기본값 `active`                        |
-| role_selected_at | TIMESTAMPTZ  | N   | N   | N      | Y        | 역할 선택 시각                         |
-| created_at       | TIMESTAMPTZ  | N   | N   | N      | N        | 생성 시각                              |
-| updated_at       | TIMESTAMPTZ  | N   | N   | N      | N        | 수정 시각                              |
-| deleted_at       | TIMESTAMPTZ  | N   | N   | N      | Y        | soft delete                            |
+| Column            | Type         | PK  | FK  | Unique | Nullable | Notes                                  |
+| ----------------- | ------------ | --- | --- | ------ | -------- | -------------------------------------- |
+| id                | BIGINT       | Y   | N   | Y      | N        | 내부 PK                                |
+| public_id         | VARCHAR(32)  | N   | N   | Y      | N        | 외부 노출용 사용자 식별자              |
+| display_name      | VARCHAR(100) | N   | N   | N      | Y        | Kakao 프로필 또는 사용자가 수정한 이름 |
+| profile_image_url | TEXT         | N   | N   | N      | Y        | Kakao profile image URL                |
+| role              | user_role    | N   | N   | N      | Y        | `child`, `mother`, `father`            |
+| status            | user_status  | N   | N   | N      | N        | 기본값 `active`                        |
+| role_selected_at  | TIMESTAMPTZ  | N   | N   | N      | Y        | 역할 선택 시각                         |
+| created_at        | TIMESTAMPTZ  | N   | N   | N      | N        | 생성 시각                              |
+| updated_at        | TIMESTAMPTZ  | N   | N   | N      | N        | 수정 시각                              |
+| deleted_at        | TIMESTAMPTZ  | N   | N   | N      | Y        | soft delete                            |
 
 인덱스 후보:
 
@@ -79,6 +80,35 @@
 - `ix_oauth_login_codes_user_status` on `(user_id, status)`
 - `ix_oauth_login_codes_expires_at` on `(expires_at)`
 
+### user_agreements
+
+목적: Kakao 로그인 이후 Damso 자체 온보딩에서 필요한 필수 동의 3개 상태를 저장한다. Kakao Developers 동의항목과 별개다.
+
+| Column         | Type           | PK  | FK       | Unique | Nullable | Notes                                                     |
+| -------------- | -------------- | --- | -------- | ------ | -------- | --------------------------------------------------------- |
+| id             | BIGINT         | Y   | N        | Y      | N        | 내부 PK                                                   |
+| user_id        | BIGINT         | N   | users.id | N      | N        | 동의 사용자                                               |
+| agreement_type | agreement_type | N   | N        | N      | N        | `terms_of_service`, `privacy_policy`, `camera_microphone_notice` |
+| agreed         | BOOLEAN        | N   | N        | N      | N        | 기본값 `false`                                            |
+| agreed_at      | TIMESTAMPTZ    | N   | N        | N      | Y        | `agreed = true`가 된 시각                                 |
+| created_at     | TIMESTAMPTZ    | N   | N        | N      | N        | 생성 시각                                                 |
+| updated_at     | TIMESTAMPTZ    | N   | N        | N      | N        | 수정 시각                                                 |
+
+인덱스 후보:
+
+- `ux_user_agreements_user_type` unique index on `(user_id, agreement_type)`
+- `ix_user_agreements_user_agreed` on `(user_id, agreed)`
+
+#### 필수 동의 기준
+
+MVP 필수 동의 타입은 다음 3개다.
+
+- `terms_of_service`: 서비스 이용약관 동의. 질문, 영상 답변, 다이어리 저장 기능 이용.
+- `privacy_policy`: 개인정보 처리 동의. 이름, 가족 연결, 질문, 영상, STT 텍스트 처리.
+- `camera_microphone_notice`: 카메라·마이크 권한 안내. 영상 답변 촬영 시 브라우저 권한 요청 안내.
+
+3개 항목이 모두 `agreed = true`일 때 온보딩의 필수 동의가 완료된 것으로 판단한다. 선택 동의, 마케팅 동의, 동의 철회 기능은 MVP 범위에서 제외한다.
+
 ### families
 
 목적: 가족방 단위를 저장한다.
@@ -88,6 +118,7 @@
 | id                 | BIGINT        | Y   | N        | Y      | N        | 내부 PK                   |
 | public_id          | VARCHAR(32)   | N   | N        | Y      | N        | 외부 노출용 가족방 식별자 |
 | name               | VARCHAR(100)  | N   | N        | N      | N        | 가족방 이름               |
+| invite_code        | VARCHAR(7)    | N   | N        | Y      | Y        | MVP 초대코드. 예: `A7K-28Q` |
 | created_by_user_id | BIGINT        | N   | users.id | N      | N        | 가족방 생성자             |
 | status             | family_status | N   | N        | N      | N        | 기본값 `active`           |
 | created_at         | TIMESTAMPTZ   | N   | N        | N      | N        | 생성 시각                 |
@@ -97,8 +128,11 @@
 인덱스 후보:
 
 - `ux_families_public_id` unique index on `(public_id)`
+- `ux_families_invite_code` unique index on `(invite_code)`
 - `ix_families_created_by_user_id` on `(created_by_user_id)`
 - `ix_families_status` on `(status)`
+
+MVP에서는 활성 초대코드 1개를 `families.invite_code`에 저장한다. 초대코드 이력, 만료, revoke가 필요해지면 `family_invite_codes` 테이블을 별도로 구현한다.
 
 ### family_members
 
@@ -109,7 +143,7 @@
 | id          | BIGINT               | Y   | N           | Y      | N        | 내부 PK                                |
 | family_id   | BIGINT               | N   | families.id | N      | N        | 가족방                                 |
 | user_id     | BIGINT               | N   | users.id    | N      | N        | 구성원                                 |
-| member_role | family_member_role   | N   | N           | N      | N        | `child`, `parent`, `member`            |
+| member_role | family_member_role   | N   | N           | N      | N        | `child`, `mother`, `father`            |
 | status      | family_member_status | N   | N           | N      | N        | `active`, `invited`, `left`, `removed` |
 | joined_at   | TIMESTAMPTZ          | N   | N           | N      | Y        | 합류 시각                              |
 | created_at  | TIMESTAMPTZ          | N   | N           | N      | N        | 생성 시각                              |
@@ -128,7 +162,7 @@
 - `users.role`: 온보딩에서 고른 사용자 기본 역할이다. `GET /api/v1/users/me`, 역할 선택 완료 여부, 첫 가족방 생성/합류 UX에 사용한다.
 - `family_members.member_role`: 특정 가족방 안에서의 역할이다. 가족방 권한, 질문 발송 권한, 구성원 목록 표시에는 이 값을 기준으로 사용한다.
 
-MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 source of truth로 사용한다. `users.role`은 온보딩 기본값과 신규 가족방 멤버십 생성 시 초기값으로만 사용한다. 이후 한 사용자가 여러 가족방에서 다른 역할을 가질 수 있으므로 API 권한 체크는 `users.role`만 보지 않는다.
+MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 source of truth로 사용한다. `users.role`은 온보딩 기본값과 신규 가족방 멤버십 생성 시 초기값으로만 사용한다. 이후 한 사용자가 여러 가족방에서 다른 역할을 가질 수 있으므로 API 권한 체크는 `users.role`만 보지 않는다. 온보딩 역할은 자식/엄마/아빠 3가지이며 API enum 값은 `child`, `mother`, `father`다.
 
 ### family_invite_codes
 
@@ -152,53 +186,52 @@ MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 s
 - `ix_family_invite_codes_family_status` on `(family_id, status)`
 - `ix_family_invite_codes_expires_at` on `(expires_at)`
 
-### questions
+### question_recommendations
 
-목적: 질문 목록 화면에 표시할 질문 원문과 AI/기본 질문 출처를 저장한다.
+목적: 질문 탭에서 depth 기준으로 랜덤 노출할 추천 질문 seed를 저장한다.
 
-| Column             | Type            | PK  | FK          | Unique | Nullable | Notes                           |
-| ------------------ | --------------- | --- | ----------- | ------ | -------- | ------------------------------- |
-| id                 | BIGINT          | Y   | N           | Y      | N        | 내부 PK                         |
-| public_id          | VARCHAR(32)     | N   | N           | Y      | N        | 외부 노출용 질문 식별자         |
-| family_id          | BIGINT          | N   | families.id | N      | Y        | 가족별 AI 질문이면 값 존재      |
-| created_by_user_id | BIGINT          | N   | users.id    | N      | Y        | AI 생성 요청자 또는 직접 작성자 |
-| source             | question_source | N   | N           | N      | N        | `seed`, `ai`, `custom`          |
-| category           | VARCHAR(80)     | N   | N           | N      | Y        | 질문 카테고리                   |
-| question_text      | TEXT            | N   | N           | N      | N        | 질문 본문                       |
-| status             | question_status | N   | N           | N      | N        | `active`, `archived`            |
-| created_at         | TIMESTAMPTZ     | N   | N           | N      | N        | 생성 시각                       |
-| updated_at         | TIMESTAMPTZ     | N   | N           | N      | N        | 수정 시각                       |
-| deleted_at         | TIMESTAMPTZ     | N   | N           | N      | Y        | soft delete                     |
+| Column        | Type                           | PK  | FK  | Unique | Nullable | Notes                         |
+| ------------- | ------------------------------ | --- | --- | ------ | -------- | ----------------------------- |
+| id            | BIGINT                         | Y   | N   | Y      | N        | 내부 PK                       |
+| question_text | TEXT                           | N   | N   | N      | N        | 추천 질문 본문                |
+| depth         | question_depth                 | N   | N   | N      | N        | `tiny`, `medium`, `deep`      |
+| category      | VARCHAR(80)                    | N   | N   | N      | Y        | 질문 카테고리                 |
+| status        | question_recommendation_status | N   | N   | N      | N        | `active`, `archived`          |
+| created_at    | TIMESTAMPTZ                    | N   | N   | N      | N        | 생성 시각                     |
+| updated_at    | TIMESTAMPTZ                    | N   | N   | N      | N        | 수정 시각                     |
 
 인덱스 후보:
 
-- `ux_questions_public_id` unique index on `(public_id)`
-- `ix_questions_family_status` on `(family_id, status)`
-- `ix_questions_source_category` on `(source, category)`
+- `ix_question_recommendations_depth_status` on `(depth, status)`
 
 ### question_sends
 
-목적: 자녀가 특정 부모님에게 질문을 보낸 이벤트와 답변 대기 상태를 저장한다.
+목적: 사용자가 같은 가족 구성원에게 질문을 보낸 이벤트와 수신자의 읽음/답변 상태를 저장한다.
 
-| Column            | Type                 | PK  | FK           | Unique | Nullable | Notes                                      |
-| ----------------- | -------------------- | --- | ------------ | ------ | -------- | ------------------------------------------ |
-| id                | BIGINT               | Y   | N            | Y      | N        | 내부 PK                                    |
-| public_id         | VARCHAR(32)          | N   | N            | Y      | N        | 외부 노출용 발송 식별자                    |
-| family_id         | BIGINT               | N   | families.id  | N      | N        | 가족방 scope                               |
-| question_id       | BIGINT               | N   | questions.id | N      | N        | 질문 원문                                  |
-| sender_user_id    | BIGINT               | N   | users.id     | N      | N        | 질문 보낸 사용자                           |
-| recipient_user_id | BIGINT               | N   | users.id     | N      | N        | 답변할 사용자                              |
-| status            | question_send_status | N   | N            | N      | N        | `sent`, `answered`, `cancelled`, `expired` |
-| sent_at           | TIMESTAMPTZ          | N   | N            | N      | N        | 발송 시각                                  |
-| due_at            | TIMESTAMPTZ          | N   | N            | N      | Y        | TODO: MVP에서 답변 기한이 필요한지 확정    |
-| created_at        | TIMESTAMPTZ          | N   | N            | N      | N        | 생성 시각                                  |
-| updated_at        | TIMESTAMPTZ          | N   | N            | N      | N        | 수정 시각                                  |
+| Column            | Type                 | PK  | FK                          | Unique | Nullable | Notes                                      |
+| ----------------- | -------------------- | --- | --------------------------- | ------ | -------- | ------------------------------------------ |
+| id                | BIGINT               | Y   | N                           | Y      | N        | 내부 PK                                    |
+| sender_user_id    | BIGINT               | N   | users.id                    | N      | N        | 질문 보낸 사용자                           |
+| recipient_user_id | BIGINT               | N   | users.id                    | N      | N        | 질문 받은 사용자                           |
+| family_id         | BIGINT               | N   | families.id                 | N      | N        | 가족방 scope                               |
+| question_text     | TEXT                 | N   | N                           | N      | N        | 발송 시점의 질문 본문                      |
+| depth             | question_depth       | N   | N                           | N      | N        | `tiny`, `medium`, `deep`                   |
+| source            | question_send_source | N   | N                           | N      | N        | `recommendation`, `custom`                 |
+| recommendation_id | BIGINT               | N   | question_recommendations.id | N      | Y        | 추천 질문을 사용한 경우                    |
+| sent_at           | TIMESTAMPTZ          | N   | N                           | N      | N        | 발송 시각                                  |
+| read_at           | TIMESTAMPTZ          | N   | N                           | N      | Y        | 수신자가 읽은 시각                         |
+| answered_at       | TIMESTAMPTZ          | N   | N                           | N      | Y        | 수신자가 답변을 완료한 시각                |
+| status            | question_send_status | N   | N                           | N      | N        | `sent`, `answered`, `cancelled`, `expired` |
+| created_at        | TIMESTAMPTZ          | N   | N                           | N      | N        | 생성 시각                                  |
+| updated_at        | TIMESTAMPTZ          | N   | N                           | N      | N        | 수정 시각                                  |
 
 인덱스 후보:
 
-- `ux_question_sends_public_id` unique index on `(public_id)`
 - `ix_question_sends_recipient_status` on `(recipient_user_id, status)`
+- `ix_question_sends_sender_status` on `(sender_user_id, status)`
 - `ix_question_sends_family_sent_at` on `(family_id, sent_at DESC)`
+
+`read_at IS NOT NULL`이면 읽음 상태로 판단한다. `answered_at IS NOT NULL` 또는 `status = answered`이면 답변 완료로 판단한다. 실제 영상 원본, 답변 메타데이터, AI 분석 결과는 후속 테이블에서 `question_sends.id`를 참조해 확장한다.
 
 ### answers
 
@@ -251,22 +284,24 @@ MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 s
 
 | ENUM                 | Values                                           |
 | -------------------- | ------------------------------------------------ |
-| user_role            | `child`, `parent`                                |
+| user_role            | `child`, `mother`, `father`                     |
 | user_status          | `active`, `disabled`                             |
 | oauth_provider       | `kakao`                                          |
 | login_code_status    | `active`, `used`, `expired`                      |
+| agreement_type       | `terms_of_service`, `privacy_policy`, `camera_microphone_notice` |
 | family_status        | `active`, `archived`                             |
-| family_member_role   | `child`, `parent`, `member`                      |
+| family_member_role   | `child`, `mother`, `father`                     |
 | family_member_status | `active`, `invited`, `left`, `removed`           |
 | invite_code_status   | `active`, `used`, `expired`, `revoked`           |
-| question_source      | `seed`, `ai`, `custom`                           |
-| question_status      | `active`, `archived`                             |
+| question_depth       | `tiny`, `medium`, `deep`                         |
+| question_recommendation_status | `active`, `archived`                  |
+| question_send_source | `recommendation`, `custom`                       |
 | question_send_status | `sent`, `answered`, `cancelled`, `expired`       |
 | answer_status        | `submitted`, `processing`, `completed`, `failed` |
 
 ## TODO
 
 - API path parameter가 내부 `id`인지 `public_id`인지 확정해야 한다. `answers`, `video_clips`는 현재 외부 노출 API가 없어 `public_id`를 두지 않았다.
-- 질문 목록의 기본 질문이 전역 seed인지, 가족별 복사본인지 확정해야 한다. 현재 설계는 전역 질문은 `family_id = NULL`, 가족별 AI/custom 질문은 `family_id` 존재로 처리한다.
+- 추천 질문 seed 운영 방식과 초기 seed 데이터 적재 방식을 확정해야 한다.
 - `video_clips.transcript`, `quote`, `summary`, `emotion_tags` 구조를 실제 프롬프트 구현 시 확정해야 한다.
 - 가족방 탈퇴/삭제 정책과 보존 기간을 확정해야 한다.

@@ -14,7 +14,7 @@
 
 ## 역할 선택
 
-- 사용자 행동: 자녀 또는 부모 역할을 선택한다.
+- 사용자 행동: 자식, 엄마, 아빠 중 하나의 역할을 선택한다.
 - API 후보: `PATCH /api/v1/users/me/role`
 - 저장 데이터: user id, role, role selected at.
 

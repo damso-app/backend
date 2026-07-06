@@ -39,6 +39,7 @@ erDiagram
         bigint id PK
         string public_id UK
         string display_name
+        string profile_image_url
         string role
         string status
         datetime role_selected_at
@@ -188,7 +189,7 @@ erDiagram
 
 ### Users and Families
 
-역할 선택 화면 때문에 `users.role`, `role_selected_at`이 필요하다. 가족 초대 코드 화면에서는 자녀가 `families`를 만들고 `family_invite_codes`를 발급한다. 부모님은 초대 코드로 합류하며, 그 결과가 `family_members`에 저장된다.
+역할 선택 화면 때문에 `users.role`, `role_selected_at`이 필요하다. 온보딩 역할은 자식/엄마/아빠 3가지이며 API enum 값은 `child`, `mother`, `father`다. 가족 초대 코드 화면에서는 자녀가 `families`를 만들고 `family_invite_codes`를 발급한다. 부모님은 초대 코드로 합류하며, 그 결과가 `family_members`에 저장된다.
 
 `family_members`는 사용자와 가족의 다대다 관계를 표현한다. 한 사용자가 여러 가족방에 속할 가능성을 MVP 이후에도 막지 않으면서, MVP에서는 현재 가족 조회를 단순하게 구현할 수 있다.
 

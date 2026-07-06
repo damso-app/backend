@@ -1,5 +1,310 @@
 # Prompt Log
 
+## 2026-07-06 질문/답변 루프 MVP 1차 구현
+
+### 요청 프롬프트 요약
+
+`implementing-question-answer-loop` Skill을 사용해 홈 요약 조회, 질문 대상자 목록 조회, 추천 질문 조회, 질문 보내기, 나에게 온 질문 목록/상세 조회, 나에게 온 질문 읽음 처리를 구현하도록 요청했다. 질문 탭과 답변 탭은 분리하고, 답변하지 않은 질문이 있어도 질문 보내기는 가능해야 한다. 영상 업로드와 실제 AI 분석 실행은 이번 범위에서 제외한다. 구현 후 `pytest`, `ruff check .`, 필요한 경우 `alembic upgrade head`를 실행하고 `docs/API_DRAFT.md`, `docs/DB_SCHEMA.md`, `docs/PROMPT_LOG.md`를 갱신하도록 요청했다.
+
+### 생성/수정 파일
+
+- `app/api/v1/home.py`
+- `app/api/v1/questions.py`
+- `app/api/v1/answers.py`
+- `app/main.py`
+- `app/models/question_recommendation.py`
+- `app/models/question_send.py`
+- `app/models/__init__.py`
+- `app/schemas/question_loop.py`
+- `app/services/question_loop_service.py`
+- `alembic/versions/20260706_0007_create_question_answer_loop_tables.py`
+- `tests/test_models.py`
+- `tests/test_question_answer_loop.py`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `GET /api/v1/home/summary`를 추가해 가족 연결 여부, 자식/부모 연결 여부, 오늘 완료 건수, 받은 질문 대기 상태, 보낸 질문 상태, AI 상태 자리(`null`)를 반환한다.
+- `GET /api/v1/questions/recipients`를 추가해 같은 활성 가족 구성원 중 본인을 제외한 질문 대상자를 반환한다.
+- `GET /api/v1/questions/recommendations`를 추가해 `tiny`, `medium`, `deep` depth 기준 active 추천 질문을 랜덤 조회한다.
+- `POST /api/v1/questions`를 추가해 추천 질문 또는 직접 작성 질문을 같은 가족 구성원에게 보낸다.
+- `GET /api/v1/answers/questions`를 추가해 나에게 온 질문 목록을 조회하고, `unansweredOnly`와 `sort`를 지원한다.
+- `GET /api/v1/answers/questions/{question_send_id}`를 추가해 현재 사용자에게 온 질문만 상세 조회한다.
+- `PATCH /api/v1/answers/questions/{question_send_id}/read`를 추가해 현재 사용자에게 온 질문만 읽음 처리한다.
+- `question_recommendations`, `question_sends` SQLAlchemy 모델과 Alembic migration을 추가했다.
+- `question_sends.read_at`으로 읽음 여부를 판단하고, `answered_at` 또는 `status = answered`로 답변 여부를 판단한다.
+- 영상 업로드, 실제 답변 저장, AI 분석 실행/저장은 구현하지 않고 후속 기능으로 남겼다.
+
+### 검증 결과
+
+```bash
+pytest
+# 70 passed, 1 warning
+
+ruff check .
+# All checks passed!
+
+.venv/bin/alembic current
+# 20260706_0006
+
+.venv/bin/alembic upgrade head
+# Running upgrade 20260706_0006 -> 20260706_0007, create question answer loop tables
+
+.venv/bin/alembic current
+# 20260706_0007 (head)
+
+python -c 'from app.main import app; schema=app.openapi(); ...'
+# /api/v1/answers/questions get
+# /api/v1/answers/questions/{question_send_id} get
+# /api/v1/answers/questions/{question_send_id}/read patch
+# /api/v1/home/summary get
+# /api/v1/questions post
+# /api/v1/questions/recipients get
+# /api/v1/questions/recommendations get
+```
+
+### 사람이 확인할 포인트
+
+- 추천 질문 seed 데이터 적재 방식은 아직 별도 운영 작업으로 남아 있다.
+- 홈 요약의 `aiStatus`는 실제 AI 분석 기능이 붙기 전까지 `null`을 반환한다.
+- 오늘 완료 건수는 `question_sends.answered_at` 기준으로 계산한다. 실제 영상 답변 저장 API가 붙으면 그 시점에 완료 상태 전이 기준을 다시 확정해야 한다.
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-06 온보딩 역할 선택과 가족 연결 MVP 구현
+
+### 요청 프롬프트 요약
+
+Kakao 로그인과 Damso access token 인증 이후 피그마의 역할 선택 화면과 가족 초대 화면에 필요한 백엔드 기능을 구현하도록 요청했다. 내 온보딩 상태 조회, 역할 선택 저장, 가족 생성 및 초대코드 발급, 내 가족 초대정보 조회, 초대코드 검증, 초대코드로 가족 참여 API를 추가한다. MVP에서는 사용자가 하나의 가족에만 속할 수 있고, 필수 동의 미완료 시 역할/가족 API를 막으며, 역할이 없으면 가족 생성/join을 막는다. 카카오톡 공유 자체, 질문/답변/다이어리 기능, 실제 비밀값 변경은 범위에서 제외한다.
+
+### 생성/수정 파일
+
+- `app/api/v1/users.py`
+- `app/api/v1/families.py`
+- `app/main.py`
+- `app/models/family.py`
+- `app/schemas/users.py`
+- `app/schemas/families.py`
+- `app/services/onboarding_service.py`
+- `app/services/family_service.py`
+- `app/services/user_agreement_service.py`
+- `alembic/versions/20260706_0005_add_family_invite_code.py`
+- `tests/test_onboarding_family.py`
+- `tests/test_models.py`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `GET /api/v1/users/me/onboarding`을 추가했다.
+- `PATCH /api/v1/users/me/role`을 추가해 `child`, `parent` 역할을 저장한다.
+- `POST /api/v1/families`를 추가해 가족 생성, `XXX-XXX` 형식 초대코드 발급, 생성자 멤버십 저장을 처리한다.
+- `GET /api/v1/families/me/invitation`을 추가해 현재 사용자의 가족 초대정보를 조회한다.
+- `GET /api/v1/families/invitations/{invite_code}`를 추가해 초대코드를 검증한다.
+- `POST /api/v1/families/join`을 추가해 초대코드로 가족에 참여한다.
+- `families.invite_code` nullable `VARCHAR(7)` 컬럼과 unique index를 추가했다.
+- 필수 동의 미완료 사용자는 역할 저장과 가족 API에서 `400`을 반환한다.
+- 역할이 없는 사용자는 가족 생성/join에서 `400`을 반환한다.
+- 이미 가족에 속한 사용자의 가족 생성/join은 `409`를 반환한다.
+- 비활성/삭제 가족 또는 없는 초대코드는 `404`를 반환한다.
+- invite URL은 기존 `FRONTEND_OAUTH_CALLBACK_URL`의 origin을 사용해 `/invite?code=...`로 생성한다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest
+# 60 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260706_0005 (head)
+
+.venv/bin/alembic upgrade head
+# Running upgrade 20260706_0004 -> 20260706_0005, add family invite code
+
+.venv/bin/alembic current
+# 20260706_0005 (head)
+```
+
+첫 `alembic upgrade head`는 sandbox DNS 제한으로 Supabase host를 해석하지 못해 실패했고, 네트워크 접근 권한으로 재실행해 성공했다. 실제 `DATABASE_URL`과 비밀번호는 기록하지 않았다.
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-06 역할 분기 3종 변경
+
+### 요청 프롬프트 요약
+
+기존에 역할을 자식/부모 2가지로 분기하던 구현을 자식/엄마/아빠 3가지로 바꾸고, 이에 맞춰 DB 테이블과 코드도 수정하며 수정 내역을 로그에 기록하도록 요청했다.
+
+### 수정 파일
+
+- `app/models/user.py`
+- `app/models/family_member.py`
+- `app/services/family_service.py`
+- `alembic/versions/20260706_0006_split_parent_roles.py`
+- `tests/test_models.py`
+- `tests/test_onboarding_family.py`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/ERD.md`
+- `docs/SCREEN_FLOW.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `UserRole` enum을 `child`, `mother`, `father`로 변경했다.
+- `FamilyMemberRole` enum도 가족방 내부 역할이 온보딩 역할과 같은 3가지 값을 쓰도록 `child`, `mother`, `father`로 변경했다.
+- 가족 생성/합류 시 `users.role`을 `family_members.member_role` 초기값으로 저장하도록 `FamilyService` 매핑을 수정했다.
+- 기존 DB에 이미 저장된 `parent` 값은 새 enum으로 이동할 때 `mother`로 보정한다. 기존 데이터만으로 엄마/아빠를 구분할 수 없기 때문이다.
+- 기존에 이론상 존재하던 `family_members.member_role = member` 값은 MVP 3분기 정책에 맞춰 migration에서 `child`로 보정한다.
+- downgrade 시 `mother`, `father`는 기존 스키마의 `parent`로 접는다.
+- API/DB 문서와 화면 흐름 문서에서 역할 선택 값을 `child`, `mother`, `father`로 갱신했다.
+
+### 검증 결과
+
+```bash
+pytest
+# 61 passed, 1 warning
+
+ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260706_0006 (head)
+
+.venv/bin/alembic current
+# 20260706_0005
+
+.venv/bin/alembic upgrade head
+# Running upgrade 20260706_0005 -> 20260706_0006, split parent roles into mother and father
+
+.venv/bin/alembic current
+# 20260706_0006 (head)
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-06 Damso 필수 동의 확인/저장 구현
+
+### 요청 프롬프트 요약
+
+Kakao 로그인 후 Damso access token을 발급받은 사용자가 온보딩에서 필수 동의 3개(`terms_of_service`, `privacy_policy`, `camera_microphone_notice`)를 완료했는지 조회하고 저장할 수 있도록 요청했다. Kakao Developers 동의항목과 Damso 자체 필수 동의를 구분하고, 선택 동의, 마케팅 동의, 동의 철회 기능은 MVP 범위에서 제외한다.
+
+### 생성/수정 파일
+
+- `app/api/dependencies.py`
+- `app/api/v1/users.py`
+- `app/main.py`
+- `app/models/user.py`
+- `app/models/user_agreement.py`
+- `app/models/__init__.py`
+- `app/schemas/users.py`
+- `app/services/user_agreement_service.py`
+- `alembic/versions/20260706_0004_create_user_agreements.py`
+- `tests/test_user_agreements.py`
+- `tests/test_models.py`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `user_agreements` 테이블과 `agreement_type` enum을 추가했다.
+- `user_id + agreement_type` unique index를 추가해 같은 항목이 중복 row로 저장되지 않도록 했다.
+- `GET /api/v1/users/me/agreements`를 추가해 현재 access token 사용자 기준 필수 동의 상태를 조회한다.
+- `POST /api/v1/users/me/agreements`를 추가해 현재 access token 사용자 기준 필수 동의를 저장한다.
+- 동의 row가 없어도 필수 3개 항목은 `agreed = false`로 응답한다.
+- 3개 필수 항목이 모두 `agreed = true`일 때 `requiredAgreementsCompleted = true`로 응답한다.
+- 이미 동의된 항목을 `false`로 되돌리는 철회 동작은 MVP에서 구현하지 않았다.
+- Kakao 로그인 로직, `.env`, 실제 비밀값은 변경하지 않았다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest
+# 48 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260706_0004 (head)
+
+.venv/bin/alembic upgrade head
+# Running upgrade 20260705_0003 -> 20260706_0004, create user agreements
+
+.venv/bin/alembic current
+# 20260706_0004 (head)
+```
+
+첫 `alembic upgrade head`는 sandbox DNS 제한으로 Supabase host를 해석하지 못해 실패했고, 네트워크 접근 권한으로 재실행해 성공했다. 실제 `DATABASE_URL`과 비밀번호는 기록하지 않았다.
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-05 Kakao Profile Image 저장 반영
+
+### 요청 프롬프트 요약
+
+Damso 백엔드의 Kakao 로그인에서 Kakao userinfo의 profile image를 Damso 사용자 정보에 저장하도록 요청했다. `kakao_account.profile.profile_image_url`을 우선 사용하고, 없으면 `thumbnail_image_url`을 fallback으로 쓰며, 둘 다 없어도 로그인은 실패하지 않게 nullable로 처리한다. 신규 유저는 `users.profile_image_url`에 저장하고, 기존 유저는 값이 비어 있을 때만 채우며 이미 있으면 덮어쓰지 않는다.
+
+### 생성/수정 파일
+
+- `app/services/kakao_auth_service.py`
+- `app/services/kakao_login_service.py`
+- `app/models/user.py`
+- `alembic/versions/20260705_0003_add_user_profile_image_url.py`
+- `tests/test_kakao_auth_service.py`
+- `tests/test_kakao_login_service.py`
+- `tests/test_models.py`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/ERD.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- Kakao userinfo 파싱에서 `profile_image_url`을 우선 읽고, 값이 없으면 `thumbnail_image_url`을 fallback으로 사용한다.
+- `users.profile_image_url` nullable `TEXT` 컬럼을 추가했다.
+- 신규 Kakao 로그인 사용자는 `users.profile_image_url`에 Kakao profile image URL을 저장한다.
+- 기존 사용자는 `users.profile_image_url`이 비어 있을 때만 새 Kakao profile image URL로 채운다.
+- 기존 값이 이미 있으면 MVP 정책상 덮어쓰지 않는다.
+- Kakao access token 전달/저장 정책과 `.env`는 변경하지 않았다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest
+# 42 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260705_0003 (head)
+
+.venv/bin/alembic upgrade head
+# Running upgrade 20260705_0002 -> 20260705_0003, add user profile image url
+```
+
+첫 `alembic upgrade head`는 sandbox DNS 제한으로 Supabase host를 해석하지 못해 실패했고, 네트워크 접근 권한으로 재실행해 성공했다. 실제 `DATABASE_URL`과 비밀번호는 기록하지 않았다.
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-05 인증/온보딩 MVP 초기 DB 모델과 Migration 구현
 
 ### 요청 프롬프트 요약

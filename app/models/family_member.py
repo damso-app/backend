@@ -17,8 +17,8 @@ BIGINT_ID = BigInteger().with_variant(Integer, "sqlite")
 
 class FamilyMemberRole(StrEnum):
     CHILD = "child"
-    PARENT = "parent"
-    MEMBER = "member"
+    MOTHER = "mother"
+    FATHER = "father"
 
 
 class FamilyMemberStatus(StrEnum):
