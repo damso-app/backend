@@ -16,6 +16,39 @@
 - 네컷 그리드 목록은 `answers`를 `family_id`, `DATE(created_at)` 기준으로 `GROUP BY` 조회한다. 별도 그리드 테이블은 두지 않는다.
 - `video_clips`는 별도 `status` 컬럼을 두지 않는다. row 존재 여부가 곧 `answers.status = completed`를 의미하는 불변식이다. 백엔드는 `video_clips` insert와 `answers.status = completed` 업데이트를 같은 트랜잭션으로 처리해서, 그리드에는 `completed`로 보이는데 클립 조회가 실패하는 순간이 생기지 않게 한다.
 - AI 처리 완료/실패는 폴링 API 대신 Supabase Realtime Broadcast(`family:{family_id}` 채널)로 알린다. 상세 payload는 `docs/API_DRAFT.md`의 Realtime 절을 따른다.
+- 답변 제출 직후 백엔드가 ffmpeg으로 추출하는 썸네일(`answers.thumbnail_url`)은 AI 처리 완료 여부와 무관하게 네컷 그리드에 노출한다. AI 가공이 끝나야 생기는 `video_clips`에는 썸네일을 다시 저장하지 않는다.
+- AI 서버 pipelineResults 전체 원본 응답은 `video_clip_ai_results.ai_raw_response`에 snapshot으로 보관한다. `video_clips`는 프론트가 바로 쓰는 필드만 정제해서 저장한다.
+
+## AI 처리 파이프라인 (2026-07-06 확정)
+
+```
+클라이언트 → GCS Signed URL로 원본 mp4 업로드 → POST /api/v1/answers
+
+백엔드
+  → answers insert (status: submitted)
+  → BackgroundTasks
+      ├── ffmpeg 썸네일 추출 → GCS 업로드 → answers.thumbnail_url 업데이트
+      └── AI 서버 POST (fire and forget, mediaPath JSON 모드)
+  → 201 반환
+
+AI 서버
+  → STT + LLM 파이프라인 (AI-002~AI-009). 영상 자체는 가공하지 않는다.
+  → 백엔드 콜백 POST /api/v1/answers/ai-callback (pipelineResults JSON)
+
+백엔드 (콜백 수신)
+  → ffmpeg HLS 변환 → GCS 업로드
+  → video_clips insert (+ video_clip_ai_results에 원본 pipelineResults snapshot)
+  → answers.status = completed 업데이트
+  → Supabase Realtime broadcast
+```
+
+이전에는 GCP Pub/Sub을 경유하는 job 큐 방식을 검토했지만, 현재는 백엔드가 AI 서버에 직접 fire-and-forget POST를 보내고 AI 서버가 처리 완료 시 백엔드의 콜백 엔드포인트를 직접 호출하는 방식으로 단순화했다. Supabase에 AI 서버가 직접 write하는 경로는 없다 — 결과 전달은 오직 콜백 하나뿐이다.
+
+AI 서버 쪽 API(`docs`의 `DAMSO-AI-API` 명세) 기준으로 두 가지 요청 모드가 있는데(JSON Path Mode `mediaPath` vs Multipart Upload Mode `file`), 백엔드는 **JSON Path Mode(`mediaPath`)를 강제**한다. AI 개발자가 백엔드 연동 경험이 없어 백엔드가 계약을 주도적으로 정의하며, GCS 경로 문자열만 넘기고 실제 파일 바이트를 백엔드가 내려받아 재업로드하지 않는다.
+
+영상 가공(썸네일 추출, HLS 변환)은 AI 서버가 하지 않고 전량 백엔드가 ffmpeg으로 처리한다. 다만 구현 우선순위는 영상 업로드(`POST /api/v1/answers`, GCS 업로드 흐름)를 먼저 완성하고, AI 연동(BackgroundTask의 AI 서버 POST, 콜백 수신)은 그 다음 단계로 미룬다.
+
+AI 서버 요청/콜백 모두 `answerId` 하나로 식별한다. AI API 스펙에 있는 별도 `jobId` 필드는 사용하지 않는다 — AI 처리 추적도 결국 `answer_id` 기준으로 하는 게 자연스러워서 식별자를 이원화하지 않기로 했다.
 
 ## Tables
 
@@ -85,15 +118,15 @@
 
 목적: Kakao 로그인 이후 Damso 자체 온보딩에서 필요한 필수 동의 3개 상태를 저장한다. Kakao Developers 동의항목과 별개다.
 
-| Column         | Type           | PK  | FK       | Unique | Nullable | Notes                                                     |
-| -------------- | -------------- | --- | -------- | ------ | -------- | --------------------------------------------------------- |
-| id             | BIGINT         | Y   | N        | Y      | N        | 내부 PK                                                   |
-| user_id        | BIGINT         | N   | users.id | N      | N        | 동의 사용자                                               |
+| Column         | Type           | PK  | FK       | Unique | Nullable | Notes                                                            |
+| -------------- | -------------- | --- | -------- | ------ | -------- | ---------------------------------------------------------------- |
+| id             | BIGINT         | Y   | N        | Y      | N        | 내부 PK                                                          |
+| user_id        | BIGINT         | N   | users.id | N      | N        | 동의 사용자                                                      |
 | agreement_type | agreement_type | N   | N        | N      | N        | `terms_of_service`, `privacy_policy`, `camera_microphone_notice` |
-| agreed         | BOOLEAN        | N   | N        | N      | N        | 기본값 `false`                                            |
-| agreed_at      | TIMESTAMPTZ    | N   | N        | N      | Y        | `agreed = true`가 된 시각                                 |
-| created_at     | TIMESTAMPTZ    | N   | N        | N      | N        | 생성 시각                                                 |
-| updated_at     | TIMESTAMPTZ    | N   | N        | N      | N        | 수정 시각                                                 |
+| agreed         | BOOLEAN        | N   | N        | N      | N        | 기본값 `false`                                                   |
+| agreed_at      | TIMESTAMPTZ    | N   | N        | N      | Y        | `agreed = true`가 된 시각                                        |
+| created_at     | TIMESTAMPTZ    | N   | N        | N      | N        | 생성 시각                                                        |
+| updated_at     | TIMESTAMPTZ    | N   | N        | N      | N        | 수정 시각                                                        |
 
 인덱스 후보:
 
@@ -114,17 +147,17 @@ MVP 필수 동의 타입은 다음 3개다.
 
 목적: 가족방 단위를 저장한다.
 
-| Column             | Type          | PK  | FK       | Unique | Nullable | Notes                     |
-| ------------------ | ------------- | --- | -------- | ------ | -------- | ------------------------- |
-| id                 | BIGINT        | Y   | N        | Y      | N        | 내부 PK                   |
-| public_id          | VARCHAR(32)   | N   | N        | Y      | N        | 외부 노출용 가족방 식별자 |
-| name               | VARCHAR(100)  | N   | N        | N      | N        | 가족방 이름               |
+| Column             | Type          | PK  | FK       | Unique | Nullable | Notes                       |
+| ------------------ | ------------- | --- | -------- | ------ | -------- | --------------------------- |
+| id                 | BIGINT        | Y   | N        | Y      | N        | 내부 PK                     |
+| public_id          | VARCHAR(32)   | N   | N        | Y      | N        | 외부 노출용 가족방 식별자   |
+| name               | VARCHAR(100)  | N   | N        | N      | N        | 가족방 이름                 |
 | invite_code        | VARCHAR(7)    | N   | N        | Y      | Y        | MVP 초대코드. 예: `A7K-28Q` |
-| created_by_user_id | BIGINT        | N   | users.id | N      | N        | 가족방 생성자             |
-| status             | family_status | N   | N        | N      | N        | 기본값 `active`           |
-| created_at         | TIMESTAMPTZ   | N   | N        | N      | N        | 생성 시각                 |
-| updated_at         | TIMESTAMPTZ   | N   | N        | N      | N        | 수정 시각                 |
-| deleted_at         | TIMESTAMPTZ   | N   | N        | N      | Y        | soft delete               |
+| created_by_user_id | BIGINT        | N   | users.id | N      | N        | 가족방 생성자               |
+| status             | family_status | N   | N        | N      | N        | 기본값 `active`             |
+| created_at         | TIMESTAMPTZ   | N   | N        | N      | N        | 생성 시각                   |
+| updated_at         | TIMESTAMPTZ   | N   | N        | N      | N        | 수정 시각                   |
+| deleted_at         | TIMESTAMPTZ   | N   | N        | N      | Y        | soft delete                 |
 
 인덱스 후보:
 
@@ -191,15 +224,15 @@ MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 s
 
 목적: 질문 탭에서 depth 기준으로 랜덤 노출할 추천 질문 seed를 저장한다.
 
-| Column        | Type                           | PK  | FK  | Unique | Nullable | Notes                         |
-| ------------- | ------------------------------ | --- | --- | ------ | -------- | ----------------------------- |
-| id            | BIGINT                         | Y   | N   | Y      | N        | 내부 PK                       |
-| question_text | TEXT                           | N   | N   | N      | N        | 추천 질문 본문                |
-| depth         | question_depth                 | N   | N   | N      | N        | `tiny`, `medium`, `deep`      |
-| category      | VARCHAR(80)                    | N   | N   | N      | Y        | 질문 카테고리                 |
-| status        | question_recommendation_status | N   | N   | N      | N        | `active`, `archived`          |
-| created_at    | TIMESTAMPTZ                    | N   | N   | N      | N        | 생성 시각                     |
-| updated_at    | TIMESTAMPTZ                    | N   | N   | N      | N        | 수정 시각                     |
+| Column        | Type                           | PK  | FK  | Unique | Nullable | Notes                    |
+| ------------- | ------------------------------ | --- | --- | ------ | -------- | ------------------------ |
+| id            | BIGINT                         | Y   | N   | Y      | N        | 내부 PK                  |
+| question_text | TEXT                           | N   | N   | N      | N        | 추천 질문 본문           |
+| depth         | question_depth                 | N   | N   | N      | N        | `tiny`, `medium`, `deep` |
+| category      | VARCHAR(80)                    | N   | N   | N      | Y        | 질문 카테고리            |
+| status        | question_recommendation_status | N   | N   | N      | N        | `active`, `archived`     |
+| created_at    | TIMESTAMPTZ                    | N   | N   | N      | N        | 생성 시각                |
+| updated_at    | TIMESTAMPTZ                    | N   | N   | N      | N        | 수정 시각                |
 
 인덱스 후보:
 
@@ -238,21 +271,25 @@ MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 s
 
 목적: 부모님이 제출한 답변 영상 파일 메타데이터를 저장한다.
 
-| Column                 | Type          | PK  | FK                | Unique | Nullable | Notes                                                                         |
-| ---------------------- | ------------- | --- | ----------------- | ------ | -------- | ----------------------------------------------------------------------------- |
-| id                     | BIGINT        | Y   | N                 | Y      | N        | 내부 PK                                                                       |
-| question_send_id       | BIGINT        | N   | question_sends.id | Y      | N        | MVP는 질문 발송당 답변 1개. 누가 누구에게 언제 보냈는지 추적                  |
-| user_id                | BIGINT        | N   | users.id          | N      | N        | 답변자                                                                        |
-| family_id              | BIGINT        | N   | families.id       | N      | N        | `question_sends.family_id` 비정규화 복사. 네컷 그리드 조회용                  |
-| video_origin_url       | TEXT          | N   | N                 | N      | Y        | 영상 원본 storage object path, 파일 blob 저장 금지                            |
-| video_mime_type        | VARCHAR(100)  | N   | N                 | N      | Y        | 예: `video/mp4`                                                               |
-| video_duration_seconds | INTEGER       | N   | N                 | N      | Y        | 영상 길이                                                                     |
-| video_size_bytes       | INTEGER       | N   | N                 | N      | Y        | 파일 크기                                                                     |
-| status                 | answer_status | N   | N                 | N      | N        | 제출부터 AI 처리까지의 상태. `submitted`, `processing`, `completed`, `failed` |
-| submitted_at           | TIMESTAMPTZ   | N   | N                 | N      | N        | 제출 시각                                                                     |
-| created_at             | TIMESTAMPTZ   | N   | N                 | N      | N        | 생성 시각                                                                     |
-| updated_at             | TIMESTAMPTZ   | N   | N                 | N      | N        | 수정 시각                                                                     |
-| deleted_at             | TIMESTAMPTZ   | N   | N                 | N      | Y        | soft delete                                                                   |
+| Column                 | Type          | PK  | FK                | Unique | Nullable | Notes                                                                                     |
+| ---------------------- | ------------- | --- | ----------------- | ------ | -------- | ----------------------------------------------------------------------------------------- |
+| id                     | BIGINT        | Y   | N                 | Y      | N        | 내부 PK                                                                                   |
+| question_send_id       | BIGINT        | N   | question_sends.id | Y      | N        | MVP는 질문 발송당 답변 1개. 누가 누구에게 언제 보냈는지 추적                              |
+| user_id                | BIGINT        | N   | users.id          | N      | N        | 답변자                                                                                    |
+| family_id              | BIGINT        | N   | families.id       | N      | N        | `question_sends.family_id` 비정규화 복사. 네컷 그리드 조회용                              |
+| video_origin_url       | TEXT          | N   | N                 | N      | Y        | 영상 원본 storage object path, 파일 blob 저장 금지                                        |
+| video_mime_type        | VARCHAR(100)  | N   | N                 | N      | Y        | 예: `video/mp4`                                                                           |
+| video_duration_seconds | INTEGER       | N   | N                 | N      | Y        | 영상 길이                                                                                 |
+| video_size_bytes       | INTEGER       | N   | N                 | N      | Y        | 파일 크기                                                                                 |
+| thumbnail_url          | TEXT          | N   | N                 | N      | Y        | 제출 직후 BackgroundTasks에서 ffmpeg으로 추출. AI 처리 상태와 무관하게 네컷 그리드 표시용 |
+| status                 | answer_status | N   | N                 | N      | N        | 제출부터 AI 처리까지의 상태. `submitted`, `processing`, `completed`, `failed`             |
+| ai_retryable           | BOOLEAN       | N   | N                 | N      | N        | AI 콜백이 보고한 재시도 가능 여부. 기본값 `false`                                         |
+| ai_fallback_used       | BOOLEAN       | N   | N                 | N      | N        | AI 콜백이 보고한 fallback 처리 사용 여부. 기본값 `false`                                  |
+| ai_input_context       | JSONB         | N   | N                 | N      | Y        | submit 시점에 조립해 AI 서버 요청에 사용한 interviewContext snapshot                      |
+| submitted_at           | TIMESTAMPTZ   | N   | N                 | N      | N        | 제출 시각                                                                                 |
+| created_at             | TIMESTAMPTZ   | N   | N                 | N      | N        | 생성 시각                                                                                 |
+| updated_at             | TIMESTAMPTZ   | N   | N                 | N      | N        | 수정 시각                                                                                 |
+| deleted_at             | TIMESTAMPTZ   | N   | N                 | N      | Y        | soft delete                                                                               |
 
 인덱스 후보:
 
@@ -260,49 +297,81 @@ MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 s
 - `ix_answers_user_submitted_at` on `(user_id, submitted_at DESC)`
 - `ix_answers_family_created_at` on `(family_id, created_at DESC)`. 네컷 그리드는 이 인덱스로 `family_id`, `DATE(created_at)` 기준 `GROUP BY` 조회
 
+#### ai_input_context 구조
+
+```json
+{
+  "send_user": "최대현",
+  "send_role": "둘째 아들",
+  "question": "자녀에게 들었던 말 중 기억에 남는 순간은?",
+  "receive_user": "최기섭",
+  "receive_role": "아버지",
+  "mediaPath": "gs://bucket/videos/ans_001.mp4"
+}
+```
+
 ### video_clips
 
-목적: 답변 영상의 AI 가공 결과(썸네일, HLS 스트리밍 URL, 전사, 제목, 명대사, 요약, 감정 태그)를 저장한다.
+목적: 답변 영상의 AI 가공 결과 중 프론트가 바로 사용하는 필드(HLS 스트리밍 URL, 전사, 제목, 명대사, 요약, 감정 태그)를 저장한다. `status` 컬럼 없음 — row 존재 여부가 곧 `completed`. 썸네일은 제출 직후 `answers.thumbnail_url`에 이미 저장되므로 여기서는 중복 저장하지 않는다.
 
-| Column        | Type         | PK  | FK         | Unique | Nullable | Notes                                       |
-| ------------- | ------------ | --- | ---------- | ------ | -------- | ------------------------------------------- |
-| id            | BIGINT       | Y   | N          | Y      | N        | 내부 PK                                     |
-| answer_id     | BIGINT       | N   | answers.id | Y      | N        | 원본 답변. MVP는 답변당 클립 1개            |
-| thumbnail_url | TEXT         | N   | N          | N      | Y        | 네컷 그리드/썸네일 표시용                   |
-| hls_url       | TEXT         | N   | N          | N      | Y        | 가공된 스트리밍용 영상 URL                  |
-| transcript    | TEXT         | N   | N          | N      | Y        | 영상/음성에서 추출한 전체 전사              |
-| title         | VARCHAR(200) | N   | N          | N      | Y        | 클립 제목                                   |
-| quote         | TEXT         | N   | N          | N      | Y        | 바텀시트/상세에 노출하는 대표 명대사        |
-| summary       | TEXT         | N   | N          | N      | Y        | 답변 요약                                   |
-| emotion_tags  | JSONB        | N   | N          | N      | Y        | 감정 태그 배열. 예: `["warm", "nostalgic"]` |
-| created_at    | TIMESTAMPTZ  | N   | N          | N      | N        | 생성 시각                                   |
+| Column              | Type         | PK  | FK         | Unique | Nullable | Notes                                                          |
+| ------------------- | ------------ | --- | ---------- | ------ | -------- | -------------------------------------------------------------- |
+| id                  | BIGINT       | Y   | N          | Y      | N        | 내부 PK                                                        |
+| answer_id           | BIGINT       | N   | answers.id | Y      | N        | 원본 답변. MVP는 답변당 클립 1개                               |
+| hls_url             | TEXT         | N   | N          | N      | Y        | 백엔드가 AI 콜백 수신 후 ffmpeg으로 변환한 스트리밍용 영상 URL |
+| transcript          | TEXT         | N   | N          | N      | Y        | 영상/음성에서 추출한 전체 전사                                 |
+| transcript_segments | JSONB        | N   | N          | N      | Y        | 전사 segments. 영상 자막 싱크용                                |
+| title               | VARCHAR(200) | N   | N          | N      | Y        | 클립 제목                                                      |
+| quote               | TEXT         | N   | N          | N      | Y        | 바텀시트/상세에 노출하는 대표 명대사                           |
+| one_line_summary    | TEXT         | N   | N          | N      | Y        | 클립 상세에 노출하는 한 줄 AI 요약                             |
+| emotion_tags        | JSONB        | N   | N          | N      | Y        | 감정 태그 배열. 예: `["warm", "nostalgic"]`                    |
+| fourcut_title       | VARCHAR(200) | N   | N          | N      | Y        | 네컷 묶음 제목                                                 |
+| created_at          | TIMESTAMPTZ  | N   | N          | N      | N        | 생성 시각                                                      |
+| updated_at          | TIMESTAMPTZ  | N   | N          | N      | N        | AI 결과 갱신 시각                                              |
 
 인덱스 후보:
 
 - `ux_video_clips_answer_id` unique index on `(answer_id)`
 
+### video_clip_ai_results
+
+목적: AI 서버 pipelineResults 전체 원본 응답을 snapshot으로 보관한다. 재처리, 디버깅, `video_clips`에 없는 필드(예: 향후 공유 기능의 shareTitle)를 추후 꺼내 쓰기 위한 용도다.
+
+| Column          | Type        | PK  | FK             | Unique | Nullable | Notes                         |
+| --------------- | ----------- | --- | -------------- | ------ | -------- | ----------------------------- |
+| id              | BIGINT      | Y   | N              | Y      | N        | 내부 PK                       |
+| video_clip_id   | BIGINT      | N   | video_clips.id | N      | N        | 원본 클립                     |
+| ai_raw_response | JSONB       | N   | N              | N      | N        | pipelineResults 전체 snapshot |
+| created_at      | TIMESTAMPTZ | N   | N              | N      | N        | 생성 시각                     |
+
+인덱스 후보:
+
+- `ix_video_clip_ai_results_video_clip_id` on `(video_clip_id)`
+
 ## ENUM Candidates
 
-| ENUM                 | Values                                           |
-| -------------------- | ------------------------------------------------ |
-| user_role            | `child`, `mother`, `father`                     |
-| user_status          | `active`, `disabled`                             |
-| oauth_provider       | `kakao`                                          |
-| login_code_status    | `active`, `used`, `expired`                      |
-| agreement_type       | `terms_of_service`, `privacy_policy`, `camera_microphone_notice` |
-| family_status        | `active`, `archived`                             |
-| family_member_role   | `child`, `mother`, `father`                     |
-| family_member_status | `active`, `invited`, `left`, `removed`           |
-| invite_code_status   | `active`, `used`, `expired`, `revoked`           |
-| question_depth       | `tiny`, `medium`, `deep`                         |
-| question_recommendation_status | `active`, `archived`                  |
-| question_send_source | `recommendation`, `custom`                       |
-| question_send_status | `sent`, `answered`, `cancelled`, `expired`       |
-| answer_status        | `submitted`, `processing`, `completed`, `failed` |
+| ENUM                           | Values                                                           |
+| ------------------------------ | ---------------------------------------------------------------- |
+| user_role                      | `child`, `mother`, `father`                                      |
+| user_status                    | `active`, `disabled`                                             |
+| oauth_provider                 | `kakao`                                                          |
+| login_code_status              | `active`, `used`, `expired`                                      |
+| agreement_type                 | `terms_of_service`, `privacy_policy`, `camera_microphone_notice` |
+| family_status                  | `active`, `archived`                                             |
+| family_member_role             | `child`, `mother`, `father`                                      |
+| family_member_status           | `active`, `invited`, `left`, `removed`                           |
+| invite_code_status             | `active`, `used`, `expired`, `revoked`                           |
+| question_depth                 | `tiny`, `medium`, `deep`                                         |
+| question_recommendation_status | `active`, `archived`                                             |
+| question_send_source           | `recommendation`, `custom`                                       |
+| question_send_status           | `sent`, `answered`, `cancelled`, `expired`                       |
+| answer_status                  | `submitted`, `processing`, `completed`, `failed`                 |
 
 ## TODO
 
 - API path parameter가 내부 `id`인지 `public_id`인지 확정해야 한다. `answers`, `video_clips`는 현재 외부 노출 API가 없어 `public_id`를 두지 않았다.
 - 추천 질문 seed 운영 방식과 초기 seed 데이터 적재 방식을 확정해야 한다.
-- `video_clips.transcript`, `quote`, `summary`, `emotion_tags` 구조를 실제 프롬프트 구현 시 확정해야 한다.
+- `video_clips.transcript`, `quote`, `one_line_summary`, `emotion_tags` 구조를 실제 프롬프트 구현 시 확정해야 한다.
 - 가족방 탈퇴/삭제 정책과 보존 기간을 확정해야 한다.
+- `video_clip_ai_results.ai_raw_response`의 실제 pipelineResults 스키마를 AI 서버 스펙 확정 후 반영해야 한다.
+- 영상 업로드(`POST /api/v1/answers`, GCS 업로드 흐름) 구현을 먼저 완료한 뒤 AI 연동(BackgroundTask의 AI 서버 POST, `POST /api/v1/answers/ai-callback` 수신)을 진행한다.

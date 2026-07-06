@@ -27,6 +27,8 @@
 - 내부 PK는 `BIGINT`를 사용한다.
 - 외부에 노출되는 식별자는 `public_id`, `invite_code` 같은 별도 값을 사용한다.
 - 영상 원본은 DB에 저장하지 않고 `video_origin_url`과 메타데이터만 저장한다. 가공본(`hls_url`)은 `video_clips`에 분리 저장한다.
+- 썸네일(`answers.thumbnail_url`)은 답변 제출 직후 AI 처리와 무관하게 생성되므로 `answers`에 둔다. `video_clips`는 AI 처리가 끝나야 생기는 데이터만 저장하며 썸네일을 중복 저장하지 않는다.
+- AI 서버 pipelineResults 원본 전체는 `video_clip_ai_results`에 snapshot으로 보관하고, `video_clips`는 프론트가 바로 쓰는 필드만 정제해서 저장한다.
 - Kakao access token은 DB에 저장하지 않는다.
 - `social_accounts`는 `provider`, `provider_user_id`를 중심으로 계정을 연결한다.
 - Raw invite code는 유출 위험을 줄이기 위해 DB에는 해시 저장을 우선한다.
@@ -140,7 +142,11 @@ erDiagram
         string video_mime_type
         int video_duration_seconds
         int video_size_bytes
+        string thumbnail_url
         string status
+        boolean ai_retryable
+        boolean ai_fallback_used
+        json ai_input_context
         datetime submitted_at
         datetime created_at
         datetime updated_at
@@ -150,13 +156,22 @@ erDiagram
     VIDEO_CLIPS {
         bigint id PK
         bigint answer_id FK
-        string thumbnail_url
         string hls_url
         text transcript
+        json transcript_segments
         string title
         text quote
-        text summary
+        text one_line_summary
         json emotion_tags
+        string fourcut_title
+        datetime created_at
+        datetime updated_at
+    }
+
+    VIDEO_CLIP_AI_RESULTS {
+        bigint id PK
+        bigint video_clip_id FK
+        json ai_raw_response
         datetime created_at
     }
 
@@ -177,6 +192,7 @@ erDiagram
     USERS ||--o{ ANSWERS : submits
     FAMILIES ||--o{ ANSWERS : scopes
     ANSWERS ||--o| VIDEO_CLIPS : processed_into
+    VIDEO_CLIPS ||--o{ VIDEO_CLIP_AI_RESULTS : snapshots
 ```
 
 ## Entity Relationships
@@ -201,7 +217,36 @@ erDiagram
 
 ### Video Clips
 
-`video_clips`는 답변 영상을 AI로 가공한 결과(썸네일, HLS 스트리밍 URL, 전사, 제목, 명대사, 요약, 감정 태그)를 저장한다. 네컷 그리드에서 컷을 탭하면 바텀시트 또는 상세 화면에서 이 데이터로 영상 재생, 명대사, 요약을 보여준다.
+AI 처리 파이프라인은 다음과 같다 (2026-07-06 확정).
+
+```
+클라이언트 → GCS Signed URL로 원본 mp4 업로드 → POST /api/v1/answers
+
+답변 백엔드 플로우
+  → answers insert (status: submitted)
+  → BackgroundTasks
+      ├── ffmpeg 썸네일 추출 → GCS 업로드 → answers.thumbnail_url 업데이트
+      └── AI 서버 POST (fire and forget, mediaPath JSON 모드)
+  → 201 반환
+
+AI 서버
+  → STT + LLM 파이프라인 (AI-002~AI-009). 영상 자체는 가공하지 않는다.
+  → 백엔드 콜백 POST /api/v1/answers/ai-callback (pipelineResults JSON)
+
+영상처리 백엔드 (콜백 수신)
+  → ffmpeg HLS 변환 → GCS 업로드
+  → video_clips insert (+ video_clip_ai_results에 원본 pipelineResults snapshot)
+  → answers.status = completed 업데이트
+  → Supabase Realtime broadcast
+```
+
+`POST /api/v1/answers/ai-callback`은 백엔드가 직접 만드는 엔드포인트다. AI 서버가 처리 완료 후 이 URL로 호출하며, Supabase에 AI 서버가 직접 write하는 경로는 없다. AI API 스펙(`DAMSO-AI-API` 명세)의 `api/v1/ai/{기능}` 네이밍은 AI 서버 자신의 엔드포인트 규칙이라, 영상 답변 쪽 콜백 수신 엔드포인트는 그 네임스페이스와 겹치지 않도록 `answers` 리소스 하위(`/api/v1/answers/ai-callback`)에 둔다. 요청/콜백 모두 `answerId` 하나로 식별하며, AI API의 별도 `jobId` 필드는 쓰지 않는다.
+
+AI 서버 요청은 JSON Path Mode(`mediaPath`)를 강제한다. AI 개발자가 백엔드 연동이 처음이라 백엔드가 계약을 주도적으로 정의하며, GCS 경로 문자열만 넘기고 실제 파일 바이트를 백엔드가 내려받아 재업로드하지 않는다. 영상 가공(썸네일, HLS)은 AI 서버가 하지 않고 전량 백엔드가 ffmpeg으로 처리하되, 구현 우선순위는 영상 업로드를 먼저 완성하고 AI 연동은 그다음이다.
+
+썸네일은 AI 처리 완료를 기다리지 않고 답변 제출 직후 생성되므로 `answers.thumbnail_url`에 저장하며, 네컷 그리드는 `status`와 무관하게 이 썸네일을 바로 노출할 수 있다. `video_clips`는 AI 콜백을 받은 뒤에야 생기는 가공 결과(HLS 스트리밍 URL, 전사, 제목, 명대사, 한 줄 요약, 감정 태그, 네컷 묶음 제목)만 저장한다. 네컷 그리드에서 컷을 탭하면 바텀시트 또는 상세 화면에서 이 데이터로 영상 재생, 명대사, 요약을 보여준다.
+
+`video_clip_ai_results`는 AI 서버 pipelineResults 전체 원본 응답을 snapshot으로 보관한다. `video_clips`에 정제해서 옮기지 않은 나머지 필드(재처리, 디버깅, 추후 공유 기능용 데이터 등)를 필요할 때 꺼내 쓰기 위한 용도이며, 한 클립에 대해 재처리가 여러 번 있었다면 여러 row가 쌓일 수 있다.
 
 ## Deletion and Status Strategy
 
@@ -211,4 +256,5 @@ erDiagram
 
 ## API Draft Notes
 
-- 현재 `API_DRAFT.md`는 `{family_id}`, `{question_id}` 같은 이름을 쓰지만, DB 설계상 외부 API에는 내부 `BIGINT id` 대신 `public_id` 사용을 권장한다. 내부 PK 노출을 막고 추측 가능한 순차 ID 접근을 줄일 수 있다. `answers`, `video_clips`는 현재 외부 상세 조회 API가 없어 `public_id`를 두지 않았다.
+- 현재 `API_DRAFT.md`는 `{family_id}`, `{question_id}` 같은 이름을 쓰지만, DB 설계상 외부 API에는 내부 `BIGINT id` 대신 `public_id` 사용을 권장한다. 내부 PK 노출을 막고 추측 가능한 순차 ID 접근을 줄일 수 있다. `answers`, `video_clips`는 현재 외부 상세 조회 API가 없어 `public_id`를 두지 않았다. `video_clip_ai_results`도 외부 API 노출이 없어 마찬가지다.
+- `POST /api/v1/answers/ai-callback`은 AI 서버가 백엔드를 호출하는 콜백 엔드포인트다. 상세 요청/응답 스펙은 `docs/API_DRAFT.md`의 Answers 절에 문서화한다.

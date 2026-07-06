@@ -1,5 +1,80 @@
 # Prompt Log
 
+## 2026-07-06 영상 업로드(answers) 테스트 작성
+
+### 요청 프롬프트 요약
+
+`docs/API_DRAFT.md` 문서화에 이어 `POST /api/v1/answers/upload-url`, `POST /api/v1/answers`에 대한 정식 테스트 코드를 작성하도록 요청했다. 실제 Supabase DB에 대한 `alembic upgrade head` 적용은 이번 세션에서는 보류하고, 로컬 검증(pytest, ruff)까지만 진행했다.
+
+### 생성/수정 파일
+
+- `tests/test_answers_upload.py`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `app/api/v1/answers.py`의 `get_storage_service`를 오버라이드하는 `FakeStorageService`로 실제 GCS 호출 없이 라우터 테스트를 작성했다(기존 `test_question_answer_loop.py`와 동일한 SQLite in-memory + `TestClient` fixture 패턴).
+- 정상 흐름(업로드 URL 발급 → 답변 제출 → `question_sends.status = answered` 반영), 수신자 아닌 사용자 403, 존재하지 않는 `questionSendId` 404, 지원하지 않는 `videoMimeType` 415, 중복 제출 409, 필수 필드 누락 422 케이스를 테스트했다.
+
+### 사람이 확인할 포인트
+
+- 실제 Supabase DB에 `20260706_0008_create_answers_table` 마이그레이션이 아직 적용되지 않았다. 다음에 적용이 필요하다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest tests/test_answers_upload.py -v
+# 6 passed, 1 warning
+
+.venv/bin/python -m pytest -q
+# 79 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260706_0008 (head)
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-06 영상 업로드 API 문서화(`docs/API_DRAFT.md`)
+
+### 요청 프롬프트 요약
+
+앞선 작업(answers 테이블, GCS 연동, `AnswerService`, 라우터)에 이어 `docs/API_DRAFT.md`에 `POST /api/v1/answers/upload-url`, `POST /api/v1/answers`의 실제 요청/응답 예시와 에러 케이스를 문서화하도록 요청했다.
+
+### 수정 파일
+
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `POST /api/v1/answers/upload-url`, `POST /api/v1/answers` 서브섹션을 추가해 실제 요청/응답 예시와 에러 케이스(404/403/409/415)를 문서화했다.
+- `GET /api/v1/clips`의 `thumbnail_url` 설명을 "`status = completed`일 때만 노출"에서 "제출 직후 생성되므로 `status`와 무관하게 항상 노출"로 정정했다 — 이전 세션에서 `thumbnail_url`을 `answers`로 옮기기로 결정한 뒤 이 문구를 놓치고 있었다.
+- 이전에 "Leo"라는 인물 이름을 문서에서 지우는 과정에서 문장 일부(" 백엔드", "→  콜백", "가 AI 서버로")가 어색하게 깨져 있던 부분을 `docs/API_DRAFT.md`, `docs/DB_SCHEMA.md`에서 자연스러운 문장으로 정리했다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 73 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+ruby -e 'ARGV.each do |path| s=File.read(path); fences=s.scan(/^```/).size; abort "#{path}: unbalanced fences" unless fences.even?; puts "#{path}: markdown fences balanced (#{fences})"; end' docs/API_DRAFT.md docs/DB_SCHEMA.md docs/ERD.md docs/PROMPT_LOG.md
+# 전부 balanced 확인
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-06 한국 시간 기준 날짜 계산 반영
 
 ### 요청 프롬프트 요약
@@ -36,6 +111,114 @@ ruff check .
 ### 프롬프트 변경 여부
 
 AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-06 영상 업로드(answers) 구현 1차 — GCS 업로드 URL 발급과 답변 등록
+
+### 요청 프롬프트 요약
+
+확정된 AI 연동 파이프라인 문서를 바탕으로 영상 업로드 기능부터 구현하도록 요청했다. 구현 상세 계획을 먼저 대화로 출력받아 승인한 뒤, 작업을 여러 단계로 나눠 각 단계가 끝날 때마다 확인받고 승인하면 다음 단계로 진행하는 방식으로 작업했다. 이번 1차 범위는 ffmpeg 썸네일/HLS, AI 서버 연동, `ai-callback` 수신은 제외하고 GCS 업로드 URL 발급과 `answers` row 등록까지다.
+
+### 생성/수정 파일
+
+- `app/models/answer.py`
+- `app/models/__init__.py`
+- `alembic/versions/20260706_0008_create_answers_table.py`
+- `requirements.txt`
+- `app/core/config.py`
+- `.env.example`
+- `.env`
+- `app/services/storage_service.py`
+- `app/schemas/answers.py`
+- `app/services/answer_service.py`
+- `app/api/v1/answers.py`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `answers` 테이블/모델을 `docs/DB_SCHEMA.md` 전체 컬럼 기준으로 생성했다(AI 콜백 관련 컬럼은 이번 단계에서 값이 안 채워지고 비워둠).
+- `google-cloud-storage` 의존성과 `gcs_bucket_name`/`gcs_signed_url_expire_minutes`/`gcs_signer_service_account` 설정을 추가했다.
+- `StorageService.generate_upload_url`을 V4 signed URL + IAM `signBlob` impersonation 방식으로 구현했다. 로컬 gcloud ADC(사용자 계정)로는 직접 서명이 안 되어 서비스 계정을 impersonate하는 방식을 쓰고, Cloud Run에서는 런타임 서비스 계정이 자기 자신을 impersonate하는 동일한 코드 경로를 쓴다.
+- 실제 `damso-videos` 버킷을 대상으로 기본 compute 서비스 계정(`42522835157-compute@developer.gserviceaccount.com`)에 대해 로컬 계정(`l3oojins@gmail.com`)에 `roles/iam.serviceAccountTokenCreator`를 부여하고, signed URL이 실제로 발급되는 것까지 확인했다.
+- `AnswerService.create_upload_url` / `submit_answer`를 추가했다. 오브젝트 경로(`answers/{family_id}/{question_send_id}/original.{ext}`)는 클라이언트가 지정하지 못하게 서버가 `family_id` + `question_send_id` + mime type으로 결정적으로 계산한다.
+- `submit_answer`는 `answers` row 생성과 함께 `question_sends.status = answered`, `answered_at`을 갱신한다(기존에 이 전이를 처리하는 코드가 없었음).
+- `POST /api/v1/answers/upload-url`, `POST /api/v1/answers` 라우트를 추가했다. 에러는 `QuestionSendNotFoundError`→404, `NotRecipientError`→403, `AlreadyAnsweredError`→409, `UnsupportedVideoMimeTypeError`→415로 매핑했다.
+
+### 사람이 확인할 포인트
+
+- 이번 단계에서 안 한 것: ffmpeg 썸네일/HLS 처리, AI 서버 fire-and-forget 연동, `POST /api/v1/answers/ai-callback` 수신, `video_clips`/`video_clip_ai_results` 테이블.
+- `docs/API_DRAFT.md`에 새 엔드포인트 두 개가 아직 문서화되지 않았다(다음 작업 예정).
+- `tests/test_answers_upload.py` 정식 테스트 코드가 아직 없다 — 지금까지는 임시 스크립트로 수동 검증만 했다(다음 작업 예정).
+- Cloud Run 배포 시 런타임 서비스 계정에 스스로에 대한 `roles/iam.serviceAccountTokenCreator` 부여가 필요하다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 70 passed, 1 warning
+
+.venv/bin/ruff check app/models/answer.py app/models/__init__.py app/core/config.py \
+  app/services/storage_service.py app/schemas/answers.py app/services/answer_service.py \
+  app/api/v1/answers.py alembic/versions/20260706_0008_create_answers_table.py
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260706_0008 (head)
+
+# 실제 GCS 버킷 대상 signed URL 발급 수동 확인 (StorageService.generate_upload_url)
+# url ok: True
+
+# OpenAPI 스키마에 신규 라우트 노출 확인
+# ['post'] /api/v1/answers/upload-url
+# ['post'] /api/v1/answers
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-06 AI 연동 파이프라인 확정과 answers/video_clips 스키마 갱신
+
+### 요청 프롬프트 요약
+
+Notion에서 `DAMSO-BE-API 명세서`와 `DAMSO-AI-API 명세서` 문서를 확인하고 그 내용을 현재 `docs/DB_SCHEMA.md`, `docs/ERD.md`와 비교해서 최신 상태로 업데이트하도록 요청했다. 이어서 실제 영상 업로드~AI 처리 파이프라인(클라이언트 GCS 업로드 → 답변 생성 → BackgroundTasks에서 ffmpeg 썸네일 추출과 AI 서버 fire-and-forget 호출 → AI 서버 콜백 → HLS 변환/video_clips 생성 → Realtime broadcast)을 알려주고 문서에 반영하도록 요청했다. 콜백 correlation identifier로 `ai_job_id`를 쓸지 `answer_id`를 쓸지, 콜백 엔드포인트를 어디에 둘지(어느 서버가 소유하는지, 경로 네이밍)를 논의해 확정했고, 실제 AI 서버 curl 예시를 보고 파일 멀티파트 업로드 방식 대신 `mediaPath` JSON 방식을 강제하기로 했다. 영상 스토리지 provider를 GCS로 재확인했다(이전 세션엔 Supabase Storage로 결정했었음). 앞으로 문서에는 특정 인물 이름을 언급하지 않도록 요청했다.
+
+### 수정 파일
+
+- `docs/DB_SCHEMA.md`
+- `docs/ERD.md`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `answers`에 `thumbnail_url`(제출 직후 ffmpeg 추출, AI 처리 상태와 무관하게 그리드 노출), `ai_retryable`, `ai_fallback_used`, `ai_input_context` 컬럼을 추가했다.
+- `video_clips`에서 `thumbnail_url`을 제거하고(`answers`가 소유), `summary`를 `one_line_summary`로 이름을 바꾸고, `transcript_segments`/`fourcut_title`/`updated_at`을 추가했다.
+- `video_clip_ai_results` 테이블을 신규 추가해 AI `pipelineResults` 전체 원본 응답을 snapshot으로 보관하도록 했다.
+- AI 연동 방식을 GCP Pub/Sub 큐 검토안에서 "백엔드 → AI 서버 fire-and-forget POST(`mediaPath` JSON 모드) → AI 서버 → 백엔드 콜백" 방식으로 확정했다.
+- 콜백 correlation은 `answer_id` 하나로 통일하기로 하고, 처음 도입했던 `ai_job_id` 컬럼(별도 correlation용)은 다시 제거했다 — AI 처리 추적도 결국 `answer_id` 기준이 자연스럽다는 판단.
+- 콜백 엔드포인트를 `POST /api/v1/ai/callback`이 아니라 `POST /api/v1/answers/ai-callback`으로 확정했다. `api/v1/ai/{기능}`은 AI 서버 자신의 엔드포인트 네이밍 규칙이라 겹치지 않도록 `answers` 리소스 하위로 옮겼다.
+- AI 서버 요청은 멀티파트 파일 업로드(`/ai/stt/transcribe-file`) 대신 JSON Path Mode(`mediaPath`)를 강제하기로 했다.
+- 영상 가공(썸네일, HLS)은 전량 백엔드 ffmpeg 담당이되, 구현 우선순위는 영상 업로드 → AI 연동 순으로 미루기로 했다.
+- `docs/API_DRAFT.md`에 `POST /api/v1/answers/ai-callback` 요청/응답 예시(성공/실패), 처리 로직, 인증 미정 TODO를 새로 문서화했다.
+
+### 사람이 확인할 포인트
+
+- `ai-callback` 엔드포인트 인증(공유 시크릿 등) 방식이 아직 미정이다.
+- `video_clip_ai_results.ai_raw_response`의 실제 스키마는 AI 서버 스펙이 최종 확정된 뒤 다시 반영해야 한다.
+- 영상 스토리지 provider가 GCS로 재확정됐으므로, 향후 실제 연동 코드(`storage_service.py`)는 Supabase Storage가 아니라 GCS SDK 기준으로 작성해야 한다.
+
+### 검증 결과
+
+문서만 수정했고 코드/DB 변경은 없다.
+
+```bash
+grep -rn "Leo" docs/
+# (결과 없음, 문서에서 인물 이름 언급 제거 확인)
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트 자체는 변경하지 않았고, 향후 AI 서버와 주고받을 `pipelineResults` 매핑 규칙만 DB 설계 문서에 반영했다.
 
 ## 2026-07-06 질문/답변 루프 MVP 1차 구현
 

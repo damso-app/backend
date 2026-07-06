@@ -1,4 +1,5 @@
 from app.db.session import Base
+from app.models.answer import Answer, AnswerStatus
 from app.models.family import Family, FamilyStatus
 from app.models.family_member import FamilyMember, FamilyMemberRole, FamilyMemberStatus
 from app.models.oauth_login_code import LoginCodeStatus, OAuthLoginCode
@@ -14,6 +15,8 @@ from app.models.user_agreement import AgreementType, UserAgreement
 
 __all__ = [
     "AgreementType",
+    "Answer",
+    "AnswerStatus",
     "Base",
     "Family",
     "FamilyMember",
