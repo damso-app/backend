@@ -15,9 +15,10 @@ BIGINT_ID = BigInteger().with_variant(Integer, "sqlite")
 
 
 class AgreementType(StrEnum):
-    TERMS_OF_SERVICE = "terms_of_service"
+    SERVICE_TERMS = "service_terms"
     PRIVACY_POLICY = "privacy_policy"
-    CAMERA_MICROPHONE_NOTICE = "camera_microphone_notice"
+    CAMERA_MICROPHONE = "camera_microphone"
+    DATA_USAGE = "data_usage"
 
 
 class UserAgreement(Base):

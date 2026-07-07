@@ -202,15 +202,16 @@ Authorization: Bearer <Damso access token>
 
 ### Damso 필수 동의
 
-Kakao Developers 동의항목과 별개로, Damso 서비스 이용을 위한 자체 필수 동의 3개를 관리한다.
+Kakao Developers 동의항목과 별개로, Damso 서비스 이용을 위한 자체 필수 동의 4개를 관리한다.
 
 필수 동의 타입:
 
-- `terms_of_service`: 서비스 이용약관 동의. 질문, 영상 답변, 다이어리 저장 기능 이용.
-- `privacy_policy`: 개인정보 처리 동의. 이름, 가족 연결, 질문, 영상, STT 텍스트 처리.
-- `camera_microphone_notice`: 카메라·마이크 권한 안내. 영상 답변 촬영 시 브라우저 권한 요청 안내.
+- `service_terms`: 서비스 이용약관 동의. 질문, 영상 답변, 다이어리 저장 기능 이용.
+- `privacy_policy`: 개인정보 처리 동의. 이름, 가족 정보, 질문, 영상 정보 처리.
+- `camera_microphone`: 카메라·마이크 권한 안내. 카메라 및 마이크 권한 허용이 필수.
+- `data_usage`: 데이터 활용 동의. 가족의 대화를 활용해 인공지능 처리.
 
-3개 항목이 모두 `agreed = true`일 때 `requiredAgreementsCompleted = true`로 판단한다. MVP에서는 선택 동의, 마케팅 동의, 동의 철회 기능을 제공하지 않는다.
+4개 항목이 모두 `agreed = true`일 때 `requiredAgreementsCompleted = true`로 판단한다. 하나라도 동의하지 않으면 온보딩 완료로 처리하지 않는다. MVP에서는 선택 동의, 마케팅 동의, 동의 철회 기능을 제공하지 않는다.
 
 ### `GET /api/v1/users/me/agreements`
 
@@ -229,17 +230,30 @@ Authorization: Bearer <Damso access token>
   "requiredAgreementsCompleted": false,
   "agreements": [
     {
-      "type": "terms_of_service",
+      "type": "service_terms",
+      "displayName": "서비스 이용약관 동의",
+      "description": "질문, 영상 답변, 다이어리 저장 기능 이용",
       "agreed": false,
       "agreedAt": null
     },
     {
       "type": "privacy_policy",
+      "displayName": "개인정보 처리 동의",
+      "description": "이름, 가족 정보, 질문, 영상 정보 처리",
       "agreed": false,
       "agreedAt": null
     },
     {
-      "type": "camera_microphone_notice",
+      "type": "camera_microphone",
+      "displayName": "카메라·마이크 권한 안내",
+      "description": "카메라 및 마이크 권한 허용이 필수",
+      "agreed": false,
+      "agreedAt": null
+    },
+    {
+      "type": "data_usage",
+      "displayName": "데이터 활용 동의",
+      "description": "가족의 대화를 활용해 인공지능 처리",
       "agreed": false,
       "agreedAt": null
     }
@@ -247,7 +261,7 @@ Authorization: Bearer <Damso access token>
 }
 ```
 
-동의 row가 없어도 필수 3개 항목은 항상 응답에 포함하며, 없는 항목은 `agreed = false`, `agreedAt = null`로 반환한다.
+동의 row가 없어도 필수 4개 항목은 항상 응답에 포함하며, 없는 항목은 `agreed = false`, `agreedAt = null`로 반환한다.
 
 ### `POST /api/v1/users/me/agreements`
 
@@ -265,7 +279,7 @@ Authorization: Bearer <Damso access token>
 {
   "agreements": [
     {
-      "type": "terms_of_service",
+      "type": "service_terms",
       "agreed": true
     },
     {
@@ -273,7 +287,11 @@ Authorization: Bearer <Damso access token>
       "agreed": true
     },
     {
-      "type": "camera_microphone_notice",
+      "type": "camera_microphone",
+      "agreed": true
+    },
+    {
+      "type": "data_usage",
       "agreed": true
     }
   ]
@@ -302,11 +320,13 @@ Authorization: Bearer <Damso access token>
 - 필수 동의가 완료되지 않은 사용자의 가족 생성, 초대정보 조회, 초대코드 검증, 가족 참여는 `400`을 반환한다.
 - 역할 선택 전 가족 생성 또는 가족 참여는 `400`을 반환한다.
 - 이미 가족에 속한 사용자가 가족을 생성하거나 join하면 `409`를 반환한다.
+- 본인이 만든 가족의 초대코드로 join하려고 하면 `409`를 반환한다.
 - 가족 생성자와 초대코드 참여자는 온보딩에서 선택한 `users.role`과 같은 값으로 `family_members.member_role`에 저장한다.
 - `mother`, `father` 역할 사용자가 초대코드로 참여하면 각각 `family_members.member_role = mother`, `family_members.member_role = father`로 저장한다.
 - 존재하지 않거나 비활성/삭제된 가족의 초대코드는 `404`를 반환한다.
 - 백엔드는 초대코드와 invite URL만 제공하며, 카카오톡 공유는 프론트엔드가 처리한다.
-- 초대코드는 대문자/숫자 6자를 `XXX-XXX` 형식으로 표시한다.
+- 초대코드는 대문자/숫자 6자를 DB에는 하이픈 없이 저장하고, API 응답과 화면 표시에는 `XXX-XXX` 형식을 사용한다.
+- 입력 초대코드는 대문자 변환, 하이픈/공백 제거 후 내부 조회한다. 예: `A7K-28Q`, `A7K28Q`, `a7k-28q`, `a7k 28q`는 모두 같은 코드로 처리한다.
 
 ### `POST /api/v1/families`
 
@@ -344,6 +364,12 @@ Authorization: Bearer <Damso access token>
 
 현재 사용자가 속한 가족의 초대정보를 조회한다.
 
+Headers:
+
+```http
+Authorization: Bearer <Damso access token>
+```
+
 응답:
 
 ```json
@@ -355,9 +381,35 @@ Authorization: Bearer <Damso access token>
 }
 ```
 
+에러:
+
+```json
+// 400
+{
+  "detail": "Required agreements are incomplete"
+}
+```
+
+```json
+// 404
+{
+  "detail": "Family invitation was not found"
+}
+```
+
 ### `GET /api/v1/families/invitations/{invite_code}`
 
 초대코드가 사용 가능한 활성 가족에 연결되는지 확인한다.
+
+Headers:
+
+```http
+Authorization: Bearer <Damso access token>
+```
+
+Path parameters:
+
+- `invite_code`: 직접 입력한 초대코드. `A7K-28Q`, `A7K28Q`, `a7k-28q`, `a7k 28q` 형태를 모두 정규화해서 조회한다.
 
 응답:
 
@@ -370,9 +422,33 @@ Authorization: Bearer <Damso access token>
 }
 ```
 
+없는 코드, 비활성 가족, 삭제된 가족은 모두 `404`로 처리한다. 응답은 코드 입력 화면에서 연결 대상 가족을 표시할 수 있는 최소 정보만 제공한다.
+
+에러:
+
+```json
+// 400
+{
+  "detail": "Required agreements are incomplete"
+}
+```
+
+```json
+// 404
+{
+  "detail": "Invite code was not found"
+}
+```
+
 ### `POST /api/v1/families/join`
 
 초대코드로 가족에 참여한다.
+
+Headers:
+
+```http
+Authorization: Bearer <Damso access token>
+```
 
 요청:
 
@@ -381,6 +457,8 @@ Authorization: Bearer <Damso access token>
   "inviteCode": "A7K-28Q"
 }
 ```
+
+`inviteCode`는 저장/조회 전 대문자 변환, 하이픈/공백 제거를 거친다. 따라서 `"A7K-28Q"`, `"A7K28Q"`, `"a7k-28q"`, `"a7k 28q"`는 모두 같은 가족 초대코드로 처리한다.
 
 응답:
 
@@ -392,6 +470,45 @@ Authorization: Bearer <Damso access token>
   "familyConnected": true
 }
 ```
+
+에러:
+
+```json
+// 400
+{
+  "detail": "Required agreements are incomplete"
+}
+```
+
+```json
+// 400
+{
+  "detail": "User role is required"
+}
+```
+
+```json
+// 404
+{
+  "detail": "Invite code was not found"
+}
+```
+
+```json
+// 409
+{
+  "detail": "User already belongs to a family"
+}
+```
+
+```json
+// 409
+{
+  "detail": "Cannot join own family invitation"
+}
+```
+
+`family_members`는 `(family_id, user_id)` unique 제약으로 같은 사용자가 같은 가족에 중복으로 생성되지 않게 한다. 서비스 계층은 활성 가족 소속 여부를 먼저 확인하고, 동시 요청 등으로 unique 제약에 걸리면 `409`로 응답한다.
 
 ## Home
 

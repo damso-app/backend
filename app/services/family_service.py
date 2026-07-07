@@ -1,9 +1,12 @@
+import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from secrets import choice, token_urlsafe
 from string import ascii_uppercase, digits
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -13,6 +16,7 @@ from app.models.user import User, UserRole
 from app.services.user_agreement_service import UserAgreementService
 
 INVITE_CODE_ALPHABET = ascii_uppercase + digits
+INVITE_CODE_LENGTH = 6
 
 
 class FamilyServiceError(Exception):
@@ -20,6 +24,10 @@ class FamilyServiceError(Exception):
 
 
 class AlreadyInFamilyError(FamilyServiceError):
+    pass
+
+
+class OwnFamilyInviteError(FamilyServiceError):
     pass
 
 
@@ -101,12 +109,14 @@ class FamilyService:
         db.flush()
 
         member_role = self._member_role_for_user(user)
+        now = datetime.now(UTC)
         db.add(
             FamilyMember(
                 family_id=family.id,
                 user_id=user.id,
                 member_role=member_role,
                 status=FamilyMemberStatus.ACTIVE,
+                joined_at=now,
             )
         )
         db.commit()
@@ -115,7 +125,7 @@ class FamilyService:
         return FamilyCreateResult(
             family_id=family.id,
             family_name=family.name,
-            invite_code=invite_code,
+            invite_code=self._display_invite_code(invite_code),
             invite_url=self._invite_url(invite_code),
             member_role=member_role,
         )
@@ -133,7 +143,7 @@ class FamilyService:
         return FamilyInvitation(
             family_id=family.id,
             family_name=family.name,
-            invite_code=family.invite_code,
+            invite_code=self._display_invite_code(family.invite_code),
             invite_url=self._invite_url(family.invite_code),
         )
 
@@ -150,7 +160,9 @@ class FamilyService:
             raise InviteCodeNotFoundError("Invite code was not found")
 
         return InviteValidationResult(
-            invite_code=family.invite_code or self._normalize_invite_code(invite_code),
+            invite_code=self._display_invite_code(
+                family.invite_code or self._normalize_invite_code(invite_code)
+            ),
             family_id=family.id,
             family_name=family.name,
             available=True,
@@ -164,23 +176,37 @@ class FamilyService:
         invite_code: str,
     ) -> FamilyJoinResult:
         self._ensure_ready_for_family_flow(db, user=user)
-        if self._active_membership(db, user_id=user.id) is not None:
+        normalized_invite_code = self._normalize_invite_code(invite_code)
+        active_membership = self._active_membership(db, user_id=user.id)
+        if active_membership is not None:
+            if (
+                active_membership.family.created_by_user_id == user.id
+                and active_membership.family.invite_code == normalized_invite_code
+            ):
+                raise OwnFamilyInviteError("Cannot join own family invitation")
             raise AlreadyInFamilyError("User already belongs to a family")
 
-        family = self._family_by_invite_code(db, invite_code=invite_code)
+        family = self._family_by_invite_code(db, invite_code=normalized_invite_code)
         if family is None:
             raise InviteCodeNotFoundError("Invite code was not found")
+        if family.created_by_user_id == user.id:
+            raise OwnFamilyInviteError("Cannot join own family invitation")
 
         member_role = self._member_role_for_user(user)
-        db.add(
-            FamilyMember(
-                family_id=family.id,
-                user_id=user.id,
-                member_role=member_role,
-                status=FamilyMemberStatus.ACTIVE,
+        try:
+            db.add(
+                FamilyMember(
+                    family_id=family.id,
+                    user_id=user.id,
+                    member_role=member_role,
+                    status=FamilyMemberStatus.ACTIVE,
+                    joined_at=datetime.now(UTC),
+                )
             )
-        )
-        db.commit()
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise AlreadyInFamilyError("User already belongs to this family") from exc
 
         return FamilyJoinResult(
             family_id=family.id,
@@ -222,10 +248,11 @@ class FamilyService:
 
     @staticmethod
     def _family_by_invite_code(db: Session, *, invite_code: str) -> Family | None:
+        normalized_invite_code = FamilyService._normalize_invite_code(invite_code)
         return db.scalar(
             select(Family)
             .where(
-                Family.invite_code == FamilyService._normalize_invite_code(invite_code),
+                Family.invite_code == normalized_invite_code,
                 Family.status == FamilyStatus.ACTIVE,
                 Family.deleted_at.is_(None),
             )
@@ -245,8 +272,7 @@ class FamilyService:
 
     @staticmethod
     def _new_invite_code() -> str:
-        raw = "".join(choice(INVITE_CODE_ALPHABET) for _ in range(6))
-        return f"{raw[:3]}-{raw[3:]}"
+        return "".join(choice(INVITE_CODE_ALPHABET) for _ in range(INVITE_CODE_LENGTH))
 
     def _generate_public_id(self, db: Session) -> str:
         for _ in range(5):
@@ -271,7 +297,7 @@ class FamilyService:
     def _invite_url(self, invite_code: str) -> str:
         callback_url = self._settings.frontend_oauth_callback_url
         base = "http://localhost:3000" if callback_url is None else self._origin(str(callback_url))
-        return f"{base}/invite?{urlencode({'code': invite_code})}"
+        return f"{base}/invite?{urlencode({'code': self._display_invite_code(invite_code)})}"
 
     @staticmethod
     def _origin(url: str) -> str:
@@ -280,4 +306,11 @@ class FamilyService:
 
     @staticmethod
     def _normalize_invite_code(invite_code: str) -> str:
-        return invite_code.strip().upper()
+        return re.sub(r"[-\s]+", "", invite_code).upper()
+
+    @staticmethod
+    def _display_invite_code(invite_code: str) -> str:
+        normalized = FamilyService._normalize_invite_code(invite_code)
+        if len(normalized) != INVITE_CODE_LENGTH:
+            return normalized
+        return f"{normalized[:3]}-{normalized[3:]}"

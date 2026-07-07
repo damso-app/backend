@@ -13,6 +13,8 @@ class UserSchema(BaseModel):
 
 class AgreementStatusItem(UserSchema):
     type: AgreementType
+    display_name: str = Field(alias="displayName")
+    description: str
     agreed: bool
     agreed_at: datetime | None = Field(default=None, alias="agreedAt")
 
