@@ -1,5 +1,45 @@
 # Prompt Log
 
+## 2026-07-07 AI 연동 플로우 리뷰 및 수정 (mediaUrl 만료, 콜백 레이스, 설정 누락 대응)
+
+### 요청 프롬프트 요약
+
+`feat/AiIntegration-#17`의 답변 영상 제출 → AI 처리 → 콜백 → 클립/Realtime 전체 플로우가 문서와 일치하고 제대로 동작하는지 검토를 요청했다. deep-reasoner 서브에이전트로 1차 리뷰를 받은 뒤, 가장 심각도가 높다고 보고된 항목("BackgroundTask 실행 시점엔 이미 DB 세션이 닫혀 있어 `ai_job_id`가 저장 안 됨")을 실제 설치된 FastAPI(0.139.0)/Starlette(1.3.1) 소스 추적 + `TestClient` 재현 테스트로 직접 검증했는데, 이 프로젝트가 쓰는 FastAPI 버전에서는 background task가 yield 의존성 종료(`db.close()`)보다 먼저 실행되는 게 맞아서(`fastapi/routing.py`의 `AsyncExitStack`이 `await response(...)` 이후에 닫힘) 이 지적은 재현되지 않아 폐기했다. 나머지 4개(HIGH 1개 + MEDIUM 3개)는 실제로 유효해서 전부 수정하도록 요청했다.
+
+### 생성/수정 파일
+
+- `app/services/storage_service.py`
+- `app/services/ai_job_service.py`
+- `app/services/ai_callback_service.py`
+- `.env.example`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `tests/test_ai_integration.py`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- **(HIGH) `mediaUrl` signed URL 만료 15분은 너무 짧음**: `StorageService.generate_read_url()`에도 `generate_upload_url()`처럼 `expire_minutes` 오버라이드를 추가했다. `AiJobService`가 `mediaUrl`을 발급할 때 `editedVideoUploadUrl`과 같은 `ai_edited_video_upload_url_expire_minutes`(기본 120분)를 쓰도록 고쳐서, job이 AI 서버 큐에서 대기하다 원본 다운로드가 만료로 실패하는 상황을 없앴다.
+- **(MEDIUM) `_build_payload()` 예외가 잡히지 않던 문제**: `dispatch_job`의 `try`가 `httpx.post` 호출만 감싸고 있어서 `_build_payload()`(GCS/JWT 설정 문제 등)에서 나는 예외는 background task 밖으로 새 나가 로그도 없이 답변이 `submitted`에 멈추는 문제가 있었다. `try` 범위를 `_build_payload()` 호출까지 넓히고 `StorageServiceError`/`AccessTokenError`도 같이 잡도록 고쳤다.
+- **(MEDIUM) `APP_BASE_URL` 미설정 시 콜백 URL이 상대경로가 되던 문제**: `dispatch_job` 시작 시 `ai_server_base_url` 체크 다음에 `app_base_url` 체크를 추가해서, `AI_SERVER_BASE_URL`만 설정되고 `APP_BASE_URL`은 비어있는 조합에서는 (AI 서버가 콜백을 못 할 게 뻔하므로) 아예 dispatch를 skip하고 경고 로그만 남기도록 했다.
+- **(MEDIUM) 콜백 동시 처리 레이스**: 거의 동시에 같은 answer에 대한 콜백이 두 번 들어오면(재시도 타이밍 겹침 등) 둘 다 `status=submitted`를 읽고 둘 다 `video_clips` insert를 시도해 unique 제약 위반(`IntegrityError`)이 처리되지 않은 `500`으로 나갈 수 있었다. `AiCallbackService._complete()`의 `db.flush()`를 `try/except IntegrityError`로 감싸서, 경합에서 진 쪽은 롤백 후 이미 처리된 것으로 보고 조용히 반환하도록 했다(재broadcast 없음).
+- 위 4개 전부에 대한 회귀 테스트를 `tests/test_ai_integration.py`에 추가했다(mediaUrl 만료시간 검증, `APP_BASE_URL` 없을 때 skip, payload 조립 예외가 안 새는지, 동시 콜백 레이스가 500 없이 처리되는지).
+- `docs/DB_SCHEMA.md`/`docs/API_DRAFT.md`/`.env.example`의 관련 서술을 갱신했다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 109 passed, 1 warning (기존 105 + 신규 4)
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-07 AI 연동 슬라이스 pytest 작성 (`feat/AiIntegration-#17` 마지막 단계)
 
 ### 요청 프롬프트 요약

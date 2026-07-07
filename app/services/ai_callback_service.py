@@ -1,4 +1,5 @@
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -109,7 +110,14 @@ class AiCallbackService:
             fourcut_title=ai_009.get("fourCutTitle"),
         )
         db.add(video_clip)
-        db.flush()
+        try:
+            db.flush()
+        except IntegrityError:
+            # A concurrent callback for the same answer already won this race
+            # (ux_video_clips_answer_id). Treat this delivery as a no-op retry
+            # instead of surfacing an unhandled 500 to the AI server.
+            db.rollback()
+            return
 
         db.add(
             VideoClipAiResult(

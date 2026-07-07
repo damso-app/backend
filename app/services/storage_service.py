@@ -69,7 +69,7 @@ class StorageService:
         expires_at = datetime.now(UTC) + expire_delta
         return upload_url, expires_at
 
-    def generate_read_url(self, *, gs_uri: str) -> str:
+    def generate_read_url(self, *, gs_uri: str, expire_minutes: int | None = None) -> str:
         if not self._settings.gcs_bucket_name:
             raise StorageNotConfiguredError("GCS_BUCKET_NAME is not configured")
 
@@ -78,7 +78,11 @@ class StorageService:
             raise StorageServiceError(f"Unexpected GCS URI for this bucket: {gs_uri}")
         object_path = gs_uri.removeprefix(prefix)
 
-        expire_delta = timedelta(minutes=self._settings.gcs_signed_url_expire_minutes)
+        expire_delta = timedelta(
+            minutes=expire_minutes
+            if expire_minutes is not None
+            else self._settings.gcs_signed_url_expire_minutes
+        )
         bucket = self.client.bucket(self._settings.gcs_bucket_name)
         blob = bucket.blob(object_path)
         return blob.generate_signed_url(

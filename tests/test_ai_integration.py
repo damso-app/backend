@@ -24,7 +24,7 @@ from app.models.user import User, UserRole
 from app.models.video_clip import VideoClip, VideoClipAiResult
 from app.services.ai_job_service import AiJobService
 from app.services.realtime_service import RealtimeService
-from app.services.storage_service import StorageService
+from app.services.storage_service import StorageNotConfiguredError, StorageService
 
 
 class FakeStorageService(StorageService):
@@ -43,7 +43,7 @@ class FakeStorageService(StorageService):
             datetime(2026, 7, 6, 10, 15, tzinfo=UTC),
         )
 
-    def generate_read_url(self, *, gs_uri: str) -> str:
+    def generate_read_url(self, *, gs_uri: str, expire_minutes: int | None = None) -> str:
         # Extract bucket and path from gs://bucket/path
         parts = gs_uri.replace("gs://", "").split("/", 1)
         if len(parts) == 2:
@@ -408,6 +408,128 @@ def test_ai_job_service_handles_http_error_gracefully(
             # Should not raise even though httpx.post fails
             service.dispatch_job(db, answer=answer)
             assert answer.ai_job_id is not None, "ai_job_id should be set despite HTTP error"
+
+
+def test_ai_job_service_uses_long_expiry_for_media_url(
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    """mediaUrl must survive AI queueing time, not just the default 15min GCS
+    signed URL expiry (regression for the short-lived mediaUrl bug)."""
+    ids = create_family_with_members(session_factory)
+    question_send_id = create_question_send(
+        session_factory,
+        sender_user_id=int(ids["child_id"]),
+        recipient_user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+    answer_id = create_answer(
+        session_factory,
+        question_send_id=question_send_id,
+        user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+
+    settings = Settings(
+        _env_file=None,
+        jwt_secret_key="unit-test-jwt-secret-with-at-least-32-bytes",
+        ai_server_base_url="https://ai-server.example.com",
+        ai_edited_video_upload_url_expire_minutes=120,
+        app_base_url="https://app.example.com",
+        gcs_bucket_name="test-bucket",
+    )
+    storage_service = FakeStorageService()
+    service = AiJobService(settings=settings, storage_service=storage_service)
+
+    with session_factory() as db:
+        answer = db.scalar(select(Answer).where(Answer.id == answer_id))
+        with mock.patch("httpx.post") as mock_post, mock.patch.object(
+            storage_service, "generate_read_url", wraps=storage_service.generate_read_url
+        ) as mock_read_url:
+            mock_post.return_value.raise_for_status = mock.MagicMock()
+            service.dispatch_job(db, answer=answer)
+
+    mock_read_url.assert_called_once_with(
+        gs_uri=answer.video_origin_url, expire_minutes=120
+    )
+
+
+def test_ai_job_service_skips_when_app_base_url_missing(
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    """If AI_SERVER_BASE_URL is set but APP_BASE_URL isn't, callbackUrl would be
+    a broken relative path -- dispatch should skip instead of sending it."""
+    ids = create_family_with_members(session_factory)
+    question_send_id = create_question_send(
+        session_factory,
+        sender_user_id=int(ids["child_id"]),
+        recipient_user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+    answer_id = create_answer(
+        session_factory,
+        question_send_id=question_send_id,
+        user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+
+    settings = Settings(
+        _env_file=None,
+        jwt_secret_key="unit-test-jwt-secret-with-at-least-32-bytes",
+        ai_server_base_url="https://ai-server.example.com",
+        app_base_url=None,
+    )
+    service = AiJobService(settings=settings, storage_service=FakeStorageService())
+
+    with session_factory() as db:
+        answer = db.scalar(select(Answer).where(Answer.id == answer_id))
+        with mock.patch("httpx.post") as mock_post:
+            service.dispatch_job(db, answer=answer)
+            mock_post.assert_not_called()
+        assert answer.ai_job_id is None, "should skip before assigning ai_job_id"
+
+
+def test_ai_job_service_swallows_payload_build_errors(
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    """A StorageServiceError raised while assembling the payload (e.g. GCS
+    misconfigured) must not escape the background task unhandled."""
+    ids = create_family_with_members(session_factory)
+    question_send_id = create_question_send(
+        session_factory,
+        sender_user_id=int(ids["child_id"]),
+        recipient_user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+    answer_id = create_answer(
+        session_factory,
+        question_send_id=question_send_id,
+        user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+
+    settings = Settings(
+        _env_file=None,
+        jwt_secret_key="unit-test-jwt-secret-with-at-least-32-bytes",
+        ai_server_base_url="https://ai-server.example.com",
+        app_base_url="https://app.example.com",
+        gcs_bucket_name="test-bucket",
+    )
+    storage_service = FakeStorageService()
+    service = AiJobService(settings=settings, storage_service=storage_service)
+
+    with session_factory() as db:
+        answer = db.scalar(select(Answer).where(Answer.id == answer_id))
+        with mock.patch.object(
+            storage_service,
+            "generate_upload_url",
+            side_effect=StorageNotConfiguredError("GCS_BUCKET_NAME is not configured"),
+        ):
+            # Should not raise even though payload assembly fails.
+            service.dispatch_job(db, answer=answer)
+            assert answer.ai_job_id is not None, "ai_job_id should still be committed"
 
 
 # ==============================================================================
@@ -1031,6 +1153,67 @@ def test_ai_callback_idempotent_on_already_failed(
     assert (
         mock_broadcast_2.call_count == 0
     ), "broadcast should not be called on idempotent second call"
+
+
+def test_ai_callback_concurrent_race_does_not_500(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    """Regression for the video_clips unique-constraint race: if a video_clip
+    for this answer already exists (as if a concurrent callback delivery won
+    first), this request must not crash with an unhandled IntegrityError/500."""
+    ids = create_family_with_members(session_factory)
+    question_send_id = create_question_send(
+        session_factory,
+        sender_user_id=int(ids["child_id"]),
+        recipient_user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+    answer_id = create_answer(
+        session_factory,
+        question_send_id=question_send_id,
+        user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+
+    # Simulate a concurrent callback delivery that already inserted the
+    # video_clip row (but hasn't -- or in this simulation, won't -- update
+    # answers.status, since that update isn't part of what races here).
+    with session_factory() as db:
+        db.add(
+            VideoClip(
+                answer_id=answer_id,
+                video_url="gs://test-bucket/answers/1/1/edited.mp4",
+            )
+        )
+        db.commit()
+
+    callback_token = create_ai_callback_token(answer_id=answer_id, settings=auth_settings)
+    payload = {
+        "answerId": str(answer_id),
+        "transcript": "test",
+        "segments": None,
+        "warnings": None,
+        "pipelineResults": {
+            "AI-008": {"status": "completed"},
+            "AI-003": {"diaryTitle": "제목", "oneLineSummary": "요약"},
+        },
+    }
+
+    with mock.patch.object(RealtimeService, "broadcast_answer_completed") as mock_broadcast:
+        response = client.post(
+            f"/api/v1/answers/{answer_id}/ai-callback",
+            headers=bearer_headers(callback_token),
+            json=payload,
+        )
+
+    assert response.status_code == 200, "must not surface the IntegrityError as a 500"
+    assert mock_broadcast.call_count == 0, "the losing side of the race must not re-broadcast"
+
+    with session_factory() as db:
+        clips = db.query(VideoClip).filter(VideoClip.answer_id == answer_id).all()
+        assert len(clips) == 1, "video_clip must not be duplicated"
 
 
 # ==============================================================================
