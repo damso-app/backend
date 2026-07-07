@@ -1,5 +1,46 @@
 # Prompt Log
 
+## 2026-07-08 FastAPI CORS 설정 추가
+
+### 요청 프롬프트 요약
+
+로컬 프론트 개발 서버(`http://localhost:3000`, `http://localhost:3001`)에서 배포된 백엔드 API(`https://damso-42522835157.asia-northeast3.run.app`)의 `GET /api/v1/auth/kakao/login-url`을 호출할 때 CORS 헤더가 없어 실패하는 문제를 해결하도록 요청했다. 허용 origin은 `CORS_ORIGINS` 환경변수로 관리하고, 이후 프론트 배포 URL도 같은 변수에 comma-separated 값으로 추가할 수 있게 하며, `allow_origins=["*"]`와 `allow_credentials=True` 조합은 사용하지 않도록 요청했다.
+
+### 생성/수정 파일
+
+- `app/core/config.py`
+- `app/main.py`
+- `.env.example`
+- `README.md`
+- `tests/test_config.py`
+- `tests/test_cors.py`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `Settings.cors_origins`를 추가하고 `CORS_ORIGINS=http://localhost:3000,http://localhost:3001` 같은 comma-separated string을 `list[str]`로 파싱하도록 했다.
+- FastAPI 앱 생성 시 `settings.cors_origins`가 있을 때만 `CORSMiddleware`를 등록하도록 했다.
+- CORS middleware 설정은 `allow_origins=settings.cors_origins`, `allow_credentials=True`, `allow_methods=["*"]`, `allow_headers=["*"]`로 구성했다.
+- `.env.example`과 README에 로컬 프론트 개발 origin 예시와 Cloud Run 환경변수 안내를 추가했다.
+- Kakao 로그인 로직, 프론트엔드 코드, 실제 비밀값은 변경하거나 기록하지 않았다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q tests/test_config.py tests/test_cors.py
+# 4 passed, 1 warning
+
+.venv/bin/python -m pytest -q
+# 122 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-08 초대 코드 기반 가족 연결 흐름 정리 및 보완
 
 ### 요청 프롬프트 요약
