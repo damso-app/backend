@@ -1,5 +1,109 @@
 # Prompt Log
 
+## 2026-07-07 `RealtimeService`(Supabase Realtime Broadcast) 작성
+
+### 요청 프롬프트 요약
+
+`feat/AiIntegration-#17`의 다음 단계로, AI 처리 완료/실패를 `family:{family_id}` 채널에 Supabase Realtime Broadcast로 알리는 `RealtimeService`를 작성하도록 요청했다. `supabase-py`가 websocket 연결 없이 서버에서 단발성으로 broadcast를 보내는 방법을 지원하는지 불확실해 Supabase 공식 문서를 확인했다.
+
+### 생성/수정 파일
+
+- `app/services/realtime_service.py`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- Supabase 공식 문서 확인 결과, `supabase-py`(`realtime` 패키지)는 websocket 연결을 맺지 않고 서버에서 단발성으로 broadcast를 보내는 방식을 아직 지원하지 않는다. 대신 Supabase Realtime이 제공하는 서버 전용 broadcast REST API(`POST {SUPABASE_URL}/realtime/v1/api/broadcast`, body `{"messages": [{"topic", "event", "payload"}]}`, `apikey`/`Authorization: Bearer {service_role_key}` 헤더)를 `httpx`로 직접 호출하는 방식을 택했다.
+- `RealtimeService.broadcast_answer_completed(family_id, answer_id, thumbnail_url)`/`broadcast_answer_failed(family_id, answer_id)`를 추가했다. 채널은 `family:{family_id}`, 이벤트명은 `answer_status_updated`로 정하고 `docs/API_DRAFT.md`의 Realtime 절에 반영했다(기존엔 이벤트명이 문서에 없었음). `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`가 설정되지 않으면 조용히 skip하고, 호출 실패는 로그만 남기고 예외를 올리지 않는다(`AiJobService`와 동일한 fire-and-forget 패턴).
+- 아직 어디에서도 호출하지 않는다 — `ai-callback` 라우트(다음 작업)에서 처리 완료/실패 시점에 연결한다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 86 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+임시 스크립트로 `httpx.post`를 monkeypatch해서 실제 payload(topic/event/payload/헤더)가 의도대로 조립되는지 수동 확인했다(실제 네트워크 호출 없음).
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-07 `POST /api/v1/answers`에 AiJobService BackgroundTasks 연결
+
+### 요청 프롬프트 요약
+
+`feat/AiIntegration-#17`의 다음 단계로, 앞서 작성한 `AiJobService`를 `POST /api/v1/answers`(답변 제출) 엔드포인트에 `BackgroundTasks`로 연결하도록 요청했다.
+
+### 생성/수정 파일
+
+- `app/api/v1/answers.py`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `get_ai_job_service` 의존성을 추가하고(`get_storage_service`를 재사용), `submit_answer` 라우트에 `BackgroundTasks`와 `AiJobService` 의존성을 주입했다.
+- `service.submit_answer(...)`로 `answers` row가 커밋된 직후 `background_tasks.add_task(ai_job_service.dispatch_job, db, answer=answer)`를 등록해, 응답을 반환한 뒤 AI 서버로의 fire-and-forget 호출이 실행되도록 했다. FastAPI는 `yield` 기반 의존성(`get_db`)의 종료 코드를 background task 완료 이후 실행하므로 같은 요청 스코프의 `db` 세션을 백그라운드 작업에서 그대로 재사용해도 안전하다.
+- `ai_server_base_url`이 비어 있는 현재 상태에서는 `AiJobService.dispatch_job`이 즉시 skip하므로 기존 테스트 동작에는 영향이 없다. `ai_server_base_url`을 설정한 상태를 가정한 임시 스크립트로 payload 조립 결과를 수동 검증했다(실제 네트워크 호출은 하지 않음, `httpx.post`만 monkeypatch).
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 86 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-07 AI 서버 연동 준비: callbackToken/설정값 + StorageService 확장/AiJobService 작성
+
+### 요청 프롬프트 요약
+
+이슈 [#17](https://github.com/damso-app/backend/issues/17)로 `feat/AiIntegration-#17` 브랜치를 만들어, AI 서버 연동(fire-and-forget POST + 콜백)을 여러 작업으로 나눠 단계마다 확인받고 진행하도록 요청했다. 이번에 진행한 두 작업은 (1) `app/core/config.py` 설정값 추가와 `app/core/security.py`의 `create_ai_callback_token`/`verify_ai_callback_token` 구현, (2) `StorageService` 확장과 `AiJobService` 작성이다. `AiJobService`의 `questionId`/`providerMode` 필드 처리 방식이 모호해 AI 개발자 Notion `DAMSO-AI-API` 명세서를 직접 확인해 확정했다.
+
+### 생성/수정 파일
+
+- `app/core/config.py`
+- `app/core/security.py`
+- `.env.example`
+- `app/services/storage_service.py`
+- `app/services/ai_job_service.py`
+- `docs/DB_SCHEMA.md`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `Settings`에 `app_base_url`, `ai_server_base_url`, `ai_job_request_timeout_seconds`, `ai_edited_video_upload_url_expire_minutes`, `ai_callback_token_expire_minutes`를 추가했다(`.env.example`도 동일하게 갱신, `AI_SERVER_BASE_URL=""`이면 미설정 상태로 취급).
+- `create_ai_callback_token`/`verify_ai_callback_token`을 추가했다. `answer_id`를 스코프로 하는 JWT이며 `aud="ai-callback"`으로 다른 토큰 종류와 구분한다.
+- `StorageService.generate_upload_url()`에 `expire_minutes` 오버라이드 파라미터를 추가해, 원본 업로드(기본 만료)와 편집 영상 업로드(120분 만료)에 같은 메서드를 재사용할 수 있게 했다.
+- `AiJobService`(신규)를 추가했다. `answer`를 받아 `jobId`/`answerId`/`questionId`/`ai_input_context` 5개 필드/`mediaUrl`(원본 signed GET)/`mediaDurationSeconds`/`editedVideoUploadUrl`(신규 signed PUT)/`includeDownstream`/`providerMode`/`callbackUrl`/`callbackToken`을 조립해 `POST {ai_server_base_url}/api/v1/ai/jobs`로 fire-and-forget 호출한다. `ai_server_base_url`이 비어 있으면 조용히 skip한다(실제 네트워크 호출 없음). `answers.ai_job_id`는 호출 성공 여부와 무관하게 항상 결정적으로 계산해 커밋한다.
+- AI 개발자 Notion `DAMSO-AI-API` 명세서를 확인해 `questionId`는 별도 question 테이블이 없어 `question_sends.id`를 그대로 쓰고, `providerMode`는 문서에는 없었지만 Notion 명세에는 있던 필드라 고정값 `"auto"`로 확정했다. `docs/API_DRAFT.md`/`docs/DB_SCHEMA.md`의 AI job 요청 예시와 필드 설명에 `providerMode`, `questionId` 매핑을 반영해 두 문서 간 드리프트를 정리했다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 86 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-06 답변 제출 시 `ai_input_context` 조립 구현
 
 ### 요청 프롬프트 요약

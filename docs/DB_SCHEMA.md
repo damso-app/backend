@@ -47,10 +47,14 @@ AI 서버
 AI 서버 요청(`DAMSO-AI-API` 명세 `POST /api/v1/ai/jobs` 기준)은 아래 필드를 실어 보낸다. 원본 영상을 gs:// 경로로 직접 넘기지 않고, 백엔드가 발급한 **signed GET URL**(`mediaUrl`)로 넘긴다 — AI 서버가 우리 GCP 프로젝트 권한을 가질 필요가 없다.
 
 - `answerId`: `answers.id`를 문자열로.
+- `questionId`: 별도 question 테이블이 없어 `question_sends.id`(=`answers.question_send_id`)를 문자열로.
 - `jobId`: `"JOB_{answer_id}"` 형식. 백엔드가 결정적으로 만들어서 보내고, `answers.ai_job_id`에 저장한다. correlation의 기준은 여전히 `answer_id`이고(같은 값에서 파생), `jobId`는 AI 서버 쪽 참고/추적용이다.
+- `send_user`/`send_role`/`question`/`receive_user`/`receive_role`: 답변 제출 시점에 `AnswerService`가 조립해 `answers.ai_input_context`에 저장해둔 값을 그대로 실어 보낸다.
 - `mediaUrl`: 원본 영상 signed GET URL.
 - `mediaDurationSeconds`: `answers.video_duration_seconds`.
 - `editedVideoUploadUrl`: 편집(자막 입힌) 영상을 AI 서버가 업로드할 signed PUT URL. 백엔드가 결정적 경로(`answers/{family_id}/{question_send_id}/edited.mp4`)로 미리 발급해서 같이 보낸다.
+- `includeDownstream`: 고정값 `true`.
+- `providerMode`: AI 서버 쪽 `DAMSO-AI-API` 명세(Notion)에 정의된 필드로, 현재는 고정값 `"auto"`만 보낸다.
 - `callbackUrl`: `POST /api/v1/answers/{answer_id}/ai-callback` 형태로 answer 단위 경로를 백엔드가 만들어서 보낸다.
 - `callbackToken`: 백엔드가 발급한 토큰. AI 서버는 콜백 호출 시 `Authorization: Bearer {callbackToken}`으로 그대로 돌려주고, 백엔드는 이 토큰으로 콜백 요청을 검증한다.
 

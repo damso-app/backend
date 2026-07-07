@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
@@ -21,6 +21,7 @@ from app.schemas.question_loop import (
     ReceivedQuestionItem,
     ReceivedQuestionsResponse,
 )
+from app.services.ai_job_service import AiJobService
 from app.services.answer_service import (
     AlreadyAnsweredError,
     AnswerService,
@@ -63,6 +64,12 @@ def get_clip_service(
     return ClipService(storage_service=storage_service)
 
 
+def get_ai_job_service(
+    storage_service: Annotated[StorageService, Depends(get_storage_service)],
+) -> AiJobService:
+    return AiJobService(storage_service=storage_service)
+
+
 @router.post(
     "/upload-url",
     response_model=AnswerUploadUrlResponse,
@@ -99,6 +106,8 @@ def submit_answer(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
     service: Annotated[AnswerService, Depends(get_answer_service)],
+    ai_job_service: Annotated[AiJobService, Depends(get_ai_job_service)],
+    background_tasks: BackgroundTasks,
 ) -> AnswerSubmitResponse:
     try:
         answer = service.submit_answer(
@@ -117,6 +126,8 @@ def submit_answer(
         raise _conflict(str(exc)) from exc
     except UnsupportedVideoMimeTypeError as exc:
         raise _unsupported_media_type(str(exc)) from exc
+
+    background_tasks.add_task(ai_job_service.dispatch_job, db, answer=answer)
 
     return AnswerSubmitResponse(
         answerId=answer.id,

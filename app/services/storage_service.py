@@ -40,11 +40,16 @@ class StorageService:
         *,
         object_path: str,
         content_type: str,
+        expire_minutes: int | None = None,
     ) -> tuple[str, datetime]:
         if not self._settings.gcs_bucket_name:
             raise StorageNotConfiguredError("GCS_BUCKET_NAME is not configured")
 
-        expire_delta = timedelta(minutes=self._settings.gcs_signed_url_expire_minutes)
+        expire_delta = timedelta(
+            minutes=expire_minutes
+            if expire_minutes is not None
+            else self._settings.gcs_signed_url_expire_minutes
+        )
         bucket = self.client.bucket(self._settings.gcs_bucket_name)
         blob = bucket.blob(object_path)
         # V4 signed URLs need a private key. Neither user ADC nor a GCE/Cloud Run

@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     gcs_bucket_name: str | None = None
     gcs_signed_url_expire_minutes: int = 15
     gcs_signer_service_account: str | None = None
+    app_base_url: str | None = None
+    ai_server_base_url: str | None = None
+    ai_job_request_timeout_seconds: float = 5.0
+    ai_edited_video_upload_url_expire_minutes: int = 120
+    ai_callback_token_expire_minutes: int = 120
 
 
 @lru_cache
