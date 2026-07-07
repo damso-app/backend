@@ -7,6 +7,7 @@ from app.core.config import Settings, get_settings
 from app.core.security import create_ai_callback_token
 from app.models.answer import Answer
 from app.services.storage_service import StorageService
+from app.services.video_paths import edited_video_object_path
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +46,12 @@ class AiJobService:
             logger.exception("Failed to dispatch AI job for answer_id=%s", answer.id)
 
     def _build_payload(self, answer: Answer) -> dict[str, object]:
+        object_path = edited_video_object_path(
+            family_id=answer.family_id,
+            question_send_id=answer.question_send_id,
+        )
         edited_video_upload_url, _ = self._storage_service.generate_upload_url(
-            object_path=self._edited_object_path(answer),
+            object_path=object_path,
             content_type=_EDITED_VIDEO_CONTENT_TYPE,
             expire_minutes=self._settings.ai_edited_video_upload_url_expire_minutes,
         )
@@ -75,7 +80,3 @@ class AiJobService:
     def _callback_url(self, answer: Answer) -> str:
         base_url = (self._settings.app_base_url or "").rstrip("/")
         return f"{base_url}{self._settings.api_v1_prefix}/answers/{answer.id}/ai-callback"
-
-    @staticmethod
-    def _edited_object_path(answer: Answer) -> str:
-        return f"answers/{answer.family_id}/{answer.question_send_id}/edited.mp4"

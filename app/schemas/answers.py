@@ -31,3 +31,16 @@ class AnswerSubmitResponse(AnswerSchema):
     question_send_id: int = Field(alias="questionSendId")
     status: AnswerStatus
     submitted_at: datetime = Field(alias="submittedAt")
+
+
+class AiCallbackRequest(AnswerSchema):
+    answer_id: str = Field(alias="answerId")
+    transcript: str | None = None
+    segments: list[dict] | None = None
+    warnings: list[str] | None = None
+    pipeline_results: dict[str, dict] = Field(alias="pipelineResults")
+
+
+class AiCallbackResponse(AnswerSchema):
+    answer_id: int = Field(alias="answerId")
+    status: AnswerStatus

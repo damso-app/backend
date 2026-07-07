@@ -1,5 +1,80 @@
 # Prompt Log
 
+## 2026-07-07 AI 연동 슬라이스 pytest 작성 (`feat/AiIntegration-#17` 마지막 단계)
+
+### 요청 프롬프트 요약
+
+`feat/AiIntegration-#17`의 마지막 단계로, Task #12~#16에서 구현한 AI 연동 코드(`AiJobService`, `RealtimeService`, `AiCallbackService`, `ai-callback` 라우트, `Settings` DI)에 대한 정식 pytest 테스트를 작성하고 `pytest`/`ruff check .`로 전체 검증하도록 요청했다. tester 서브에이전트에게 위임했다.
+
+### 생성/수정 파일
+
+- `tests/test_ai_integration.py` (신규)
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `tests/test_answers_upload.py`의 fixture 패턴(`FakeStorageService`, SQLite in-memory `session_factory`, `auth_settings`, `client`)을 그대로 따라 새 테스트 파일을 작성했다. 19개 테스트 추가(`AiJobService` 4개, `RealtimeService` 4개, `ai-callback` 라우트 10개, `Settings` DI 회귀 테스트 1개).
+- 커버한 시나리오: `ai_server_base_url`/`supabase_url` 미설정 시 skip, 설정 시 `httpx.post` payload 필드 검증, `ai_job_id`가 HTTP 호출 성공 여부와 무관하게 커밋되는지, `httpx.HTTPError` 발생 시 예외 없이 넘어가는지, ai-callback 성공/실패 플로우(`video_clips`/`video_clip_ai_results` insert, `answers.status`/`ai_retryable`/`ai_fallback_used` 갱신, Realtime broadcast 호출), 인증 실패(토큰 없음/무효/다른 answer_id로 발급) 401, 존재하지 않는 answer 404, `answerId` 불일치 400, 알 수 없는 `pipelineResults.AI-008.status` 400, 이미 completed/failed인 answer에 대한 재호출 시 재처리·중복 broadcast 없음(idempotent), `auth_settings`로 만든 callbackToken이 실제 라우트에서 검증되는지(Task #16에서 고친 Settings DI 버그의 회귀 테스트).
+- 실제 네트워크 호출 없이 `unittest.mock.patch`로 `httpx.post`/`RealtimeService`의 메서드를 막아서 검증했다.
+- 리뷰 과정에서 테스트 함수 내부에 흩어져 있던 `import httpx`/`from pydantic import SecretStr`를 파일 상단 임포트로 정리했다(동작 변경 없음).
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 105 passed, 1 warning (기존 86 + 신규 19)
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+이걸로 `feat/AiIntegration-#17`(Task #12~#17)의 AI 서버 연동 준비 구현이 전부 끝났다. `AI_SERVER_BASE_URL`/`SUPABASE_URL` 등은 여전히 미설정 상태로 유지되며, 실제 AI 서버·Supabase로의 네트워크 호출은 이번 브랜치 어디에서도 발생하지 않는다.
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-07 `POST /api/v1/answers/{answer_id}/ai-callback` 수신 라우트 + `AiCallbackService` 구현
+
+### 요청 프롬프트 요약
+
+`feat/AiIntegration-#17`의 마지막 구현 단계로, AI 서버가 처리 완료/실패 시 호출하는 콜백 수신 라우트와 `AiCallbackService`를 작성하도록 요청했다. `docs/API_DRAFT.md`에 이미 있던 콜백 스펙(성공/실패 요청 예시, `callbackToken` 검증, `pipelineResults` → `video_clips`/`answers` 매핑, Realtime broadcast)을 그대로 구현했다.
+
+### 생성/수정 파일
+
+- `app/services/video_paths.py` (신규)
+- `app/services/ai_job_service.py`
+- `app/services/ai_callback_service.py` (신규)
+- `app/schemas/answers.py`
+- `app/api/v1/answers.py`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- 편집 영상의 결정적 GCS 경로(`answers/{family_id}/{question_send_id}/edited.mp4`)를 만드는 로직이 `AiJobService`(editedVideoUploadUrl 발급용)와 새 콜백 서비스(video_clips.video_url 저장용) 양쪽에서 필요해서, `app/services/video_paths.py`의 `edited_video_object_path()`로 추출해 공유하고 `AiJobService`도 이걸 쓰도록 정리했다.
+- `AiCallbackRequest`/`AiCallbackResponse` 스키마를 추가했다. `segments`/`pipelineResults`는 AI 서버가 보낸 원본 키(`startMs` 등 camelCase)를 그대로 저장했다가 클립 상세 응답에 그대로 흘려보내야 해서, 별도 필드 변환 없이 `list[dict]`/`dict[str, dict]`로 그대로 받는다.
+- `AiCallbackService.handle_callback()`을 추가했다: `callbackToken` 검증(`answer_id`를 audience로 하는 JWT) → `answers` row 조회(`404`) → body `answerId`와 경로 `answer_id` 일치 확인(`400`) → 이미 `completed`/`failed`면 재처리 없이 그대로 반환(재시도 시 중복 처리/중복 broadcast 방지) → `pipelineResults.AI-008.status`가 `completed`면 `video_clips` insert + `video_clip_ai_results`에 `pipelineResults` 스냅샷 insert + `answers.status = completed`를 한 트랜잭션으로 커밋 후 `RealtimeService.broadcast_answer_completed()` 호출, `failed`면 `answers.status = failed`/`ai_retryable`/`ai_fallback_used` 갱신 후 `broadcast_answer_failed()` 호출.
+- `POST /api/v1/answers/{answer_id}/ai-callback` 라우트를 추가했다. 일반 사용자 인증(`get_current_user`)이 아니라 `Authorization: Bearer {callbackToken}`만으로 인증하며, `credentials`가 없으면 `401`을 반환한다.
+- 구현 중 `get_ai_job_service`/`get_realtime_service`가 `Settings`를 FastAPI DI로 주입받지 않고 서비스 내부에서 `get_settings()`(전역 캐시)를 직접 호출하고 있던 걸 발견했다 — `app.dependency_overrides[get_settings]`로 테스트용 시크릿을 주입해도 이 서비스들에는 반영되지 않아 `callbackToken` 서명 검증이 실제로는 잘못된(진짜 환경의) 시크릿으로 이뤄지는 버그였다. `get_current_user`가 이미 하고 있던 방식(`Depends(get_settings)`로 명시적으로 주입)에 맞춰 `get_ai_job_service`/`get_realtime_service`/`get_ai_callback_service` 세 곳 모두 `Settings`를 주입받아 서비스 생성자에 전달하도록 고쳤다.
+- `docs/API_DRAFT.md`의 콜백 절에 응답 바디(`{"answerId", "status"}`), 처리 순서(토큰 검증 우선 → 404 → answerId 불일치 400 → 이미 처리된 answer는 재처리 없이 200 → 알 수 없는 파이프라인 상태는 400), 그리고 이제 해소된 인증 방식 TODO 제거를 반영했다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 86 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+TestClient + SQLite in-memory + Fake `StorageService`/`RealtimeService`를 쓴 임시 스크립트로 성공/실패/토큰불일치/answerId불일치/중복호출(idempotent)/존재하지않는answer 시나리오를 전부 수동 검증했다(정식 pytest 테스트는 Task #17에서 작성 예정).
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-07 `RealtimeService`(Supabase Realtime Broadcast) 작성
 
 ### 요청 프롬프트 요약
