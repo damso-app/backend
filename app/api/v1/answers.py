@@ -1,13 +1,17 @@
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import bearer_scheme, get_current_user
+from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.models.question_send import QuestionSend, QuestionSendStatus
 from app.models.user import User
 from app.schemas.answers import (
+    AiCallbackRequest,
+    AiCallbackResponse,
     AnswerSubmitRequest,
     AnswerSubmitResponse,
     AnswerUploadUrlRequest,
@@ -21,6 +25,14 @@ from app.schemas.question_loop import (
     ReceivedQuestionItem,
     ReceivedQuestionsResponse,
 )
+from app.services.ai_callback_service import (
+    AiCallbackService,
+    AnswerIdMismatchError,
+    InvalidCallbackTokenError,
+    InvalidPipelineResultError,
+)
+from app.services.ai_callback_service import AnswerNotFoundError as AiCallbackAnswerNotFoundError
+from app.services.ai_job_service import AiJobService
 from app.services.answer_service import (
     AlreadyAnsweredError,
     AnswerService,
@@ -38,6 +50,7 @@ from app.services.question_loop_service import (
     QuestionLoopService,
     ReceivedQuestionNotFoundError,
 )
+from app.services.realtime_service import RealtimeService
 from app.services.storage_service import StorageService
 
 router = APIRouter(prefix="/answers", tags=["answers"])
@@ -61,6 +74,29 @@ def get_clip_service(
     storage_service: Annotated[StorageService, Depends(get_storage_service)],
 ) -> ClipService:
     return ClipService(storage_service=storage_service)
+
+
+def get_ai_job_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+    storage_service: Annotated[StorageService, Depends(get_storage_service)],
+) -> AiJobService:
+    return AiJobService(settings=settings, storage_service=storage_service)
+
+
+def get_realtime_service(settings: Annotated[Settings, Depends(get_settings)]) -> RealtimeService:
+    return RealtimeService(settings=settings)
+
+
+def get_ai_callback_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+    storage_service: Annotated[StorageService, Depends(get_storage_service)],
+    realtime_service: Annotated[RealtimeService, Depends(get_realtime_service)],
+) -> AiCallbackService:
+    return AiCallbackService(
+        settings=settings,
+        storage_service=storage_service,
+        realtime_service=realtime_service,
+    )
 
 
 @router.post(
@@ -99,6 +135,8 @@ def submit_answer(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
     service: Annotated[AnswerService, Depends(get_answer_service)],
+    ai_job_service: Annotated[AiJobService, Depends(get_ai_job_service)],
+    background_tasks: BackgroundTasks,
 ) -> AnswerSubmitResponse:
     try:
         answer = service.submit_answer(
@@ -117,6 +155,8 @@ def submit_answer(
         raise _conflict(str(exc)) from exc
     except UnsupportedVideoMimeTypeError as exc:
         raise _unsupported_media_type(str(exc)) from exc
+
+    background_tasks.add_task(ai_job_service.dispatch_job, db, answer=answer)
 
     return AnswerSubmitResponse(
         answerId=answer.id,
@@ -159,6 +199,42 @@ def get_answer_clip(
         emotionTags=video_clip.emotion_tags,
         fourcutTitle=video_clip.fourcut_title,
     )
+
+
+@router.post("/{answer_id}/ai-callback", response_model=AiCallbackResponse)
+def receive_ai_callback(
+    answer_id: int,
+    payload: AiCallbackRequest,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[AiCallbackService, Depends(get_ai_callback_service)],
+) -> AiCallbackResponse:
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        answer = service.handle_callback(
+            db,
+            answer_id=answer_id,
+            callback_token=credentials.credentials,
+            payload=payload,
+        )
+    except AiCallbackAnswerNotFoundError as exc:
+        raise _not_found("Answer was not found") from exc
+    except InvalidCallbackTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid callback token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except (AnswerIdMismatchError, InvalidPipelineResultError) as exc:
+        raise _bad_request(str(exc)) from exc
+
+    return AiCallbackResponse(answerId=answer.id, status=answer.status)
 
 
 @router.get("/questions", response_model=ReceivedQuestionsResponse)
@@ -254,6 +330,10 @@ def _received_question_item(question: QuestionSend) -> ReceivedQuestionItem:
 
 def _is_answered(question: QuestionSend) -> bool:
     return question.answered_at is not None or question.status == QuestionSendStatus.ANSWERED
+
+
+def _bad_request(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
 
 def _not_found(detail: str) -> HTTPException:

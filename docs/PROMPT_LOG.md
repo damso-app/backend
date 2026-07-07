@@ -1,5 +1,224 @@
 # Prompt Log
 
+## 2026-07-07 AI 연동 플로우 리뷰 및 수정 (mediaUrl 만료, 콜백 레이스, 설정 누락 대응)
+
+### 요청 프롬프트 요약
+
+`feat/AiIntegration-#17`의 답변 영상 제출 → AI 처리 → 콜백 → 클립/Realtime 전체 플로우가 문서와 일치하고 제대로 동작하는지 검토를 요청했다. deep-reasoner 서브에이전트로 1차 리뷰를 받은 뒤, 가장 심각도가 높다고 보고된 항목("BackgroundTask 실행 시점엔 이미 DB 세션이 닫혀 있어 `ai_job_id`가 저장 안 됨")을 실제 설치된 FastAPI(0.139.0)/Starlette(1.3.1) 소스 추적 + `TestClient` 재현 테스트로 직접 검증했는데, 이 프로젝트가 쓰는 FastAPI 버전에서는 background task가 yield 의존성 종료(`db.close()`)보다 먼저 실행되는 게 맞아서(`fastapi/routing.py`의 `AsyncExitStack`이 `await response(...)` 이후에 닫힘) 이 지적은 재현되지 않아 폐기했다. 나머지 4개(HIGH 1개 + MEDIUM 3개)는 실제로 유효해서 전부 수정하도록 요청했다.
+
+### 생성/수정 파일
+
+- `app/services/storage_service.py`
+- `app/services/ai_job_service.py`
+- `app/services/ai_callback_service.py`
+- `.env.example`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `tests/test_ai_integration.py`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- **(HIGH) `mediaUrl` signed URL 만료 15분은 너무 짧음**: `StorageService.generate_read_url()`에도 `generate_upload_url()`처럼 `expire_minutes` 오버라이드를 추가했다. `AiJobService`가 `mediaUrl`을 발급할 때 `editedVideoUploadUrl`과 같은 `ai_edited_video_upload_url_expire_minutes`(기본 120분)를 쓰도록 고쳐서, job이 AI 서버 큐에서 대기하다 원본 다운로드가 만료로 실패하는 상황을 없앴다.
+- **(MEDIUM) `_build_payload()` 예외가 잡히지 않던 문제**: `dispatch_job`의 `try`가 `httpx.post` 호출만 감싸고 있어서 `_build_payload()`(GCS/JWT 설정 문제 등)에서 나는 예외는 background task 밖으로 새 나가 로그도 없이 답변이 `submitted`에 멈추는 문제가 있었다. `try` 범위를 `_build_payload()` 호출까지 넓히고 `StorageServiceError`/`AccessTokenError`도 같이 잡도록 고쳤다.
+- **(MEDIUM) `APP_BASE_URL` 미설정 시 콜백 URL이 상대경로가 되던 문제**: `dispatch_job` 시작 시 `ai_server_base_url` 체크 다음에 `app_base_url` 체크를 추가해서, `AI_SERVER_BASE_URL`만 설정되고 `APP_BASE_URL`은 비어있는 조합에서는 (AI 서버가 콜백을 못 할 게 뻔하므로) 아예 dispatch를 skip하고 경고 로그만 남기도록 했다.
+- **(MEDIUM) 콜백 동시 처리 레이스**: 거의 동시에 같은 answer에 대한 콜백이 두 번 들어오면(재시도 타이밍 겹침 등) 둘 다 `status=submitted`를 읽고 둘 다 `video_clips` insert를 시도해 unique 제약 위반(`IntegrityError`)이 처리되지 않은 `500`으로 나갈 수 있었다. `AiCallbackService._complete()`의 `db.flush()`를 `try/except IntegrityError`로 감싸서, 경합에서 진 쪽은 롤백 후 이미 처리된 것으로 보고 조용히 반환하도록 했다(재broadcast 없음).
+- 위 4개 전부에 대한 회귀 테스트를 `tests/test_ai_integration.py`에 추가했다(mediaUrl 만료시간 검증, `APP_BASE_URL` 없을 때 skip, payload 조립 예외가 안 새는지, 동시 콜백 레이스가 500 없이 처리되는지).
+- `docs/DB_SCHEMA.md`/`docs/API_DRAFT.md`/`.env.example`의 관련 서술을 갱신했다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 109 passed, 1 warning (기존 105 + 신규 4)
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-07 AI 연동 슬라이스 pytest 작성 (`feat/AiIntegration-#17` 마지막 단계)
+
+### 요청 프롬프트 요약
+
+`feat/AiIntegration-#17`의 마지막 단계로, Task #12~#16에서 구현한 AI 연동 코드(`AiJobService`, `RealtimeService`, `AiCallbackService`, `ai-callback` 라우트, `Settings` DI)에 대한 정식 pytest 테스트를 작성하고 `pytest`/`ruff check .`로 전체 검증하도록 요청했다. tester 서브에이전트에게 위임했다.
+
+### 생성/수정 파일
+
+- `tests/test_ai_integration.py` (신규)
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `tests/test_answers_upload.py`의 fixture 패턴(`FakeStorageService`, SQLite in-memory `session_factory`, `auth_settings`, `client`)을 그대로 따라 새 테스트 파일을 작성했다. 19개 테스트 추가(`AiJobService` 4개, `RealtimeService` 4개, `ai-callback` 라우트 10개, `Settings` DI 회귀 테스트 1개).
+- 커버한 시나리오: `ai_server_base_url`/`supabase_url` 미설정 시 skip, 설정 시 `httpx.post` payload 필드 검증, `ai_job_id`가 HTTP 호출 성공 여부와 무관하게 커밋되는지, `httpx.HTTPError` 발생 시 예외 없이 넘어가는지, ai-callback 성공/실패 플로우(`video_clips`/`video_clip_ai_results` insert, `answers.status`/`ai_retryable`/`ai_fallback_used` 갱신, Realtime broadcast 호출), 인증 실패(토큰 없음/무효/다른 answer_id로 발급) 401, 존재하지 않는 answer 404, `answerId` 불일치 400, 알 수 없는 `pipelineResults.AI-008.status` 400, 이미 completed/failed인 answer에 대한 재호출 시 재처리·중복 broadcast 없음(idempotent), `auth_settings`로 만든 callbackToken이 실제 라우트에서 검증되는지(Task #16에서 고친 Settings DI 버그의 회귀 테스트).
+- 실제 네트워크 호출 없이 `unittest.mock.patch`로 `httpx.post`/`RealtimeService`의 메서드를 막아서 검증했다.
+- 리뷰 과정에서 테스트 함수 내부에 흩어져 있던 `import httpx`/`from pydantic import SecretStr`를 파일 상단 임포트로 정리했다(동작 변경 없음).
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 105 passed, 1 warning (기존 86 + 신규 19)
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+이걸로 `feat/AiIntegration-#17`(Task #12~#17)의 AI 서버 연동 준비 구현이 전부 끝났다. `AI_SERVER_BASE_URL`/`SUPABASE_URL` 등은 여전히 미설정 상태로 유지되며, 실제 AI 서버·Supabase로의 네트워크 호출은 이번 브랜치 어디에서도 발생하지 않는다.
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-07 `POST /api/v1/answers/{answer_id}/ai-callback` 수신 라우트 + `AiCallbackService` 구현
+
+### 요청 프롬프트 요약
+
+`feat/AiIntegration-#17`의 마지막 구현 단계로, AI 서버가 처리 완료/실패 시 호출하는 콜백 수신 라우트와 `AiCallbackService`를 작성하도록 요청했다. `docs/API_DRAFT.md`에 이미 있던 콜백 스펙(성공/실패 요청 예시, `callbackToken` 검증, `pipelineResults` → `video_clips`/`answers` 매핑, Realtime broadcast)을 그대로 구현했다.
+
+### 생성/수정 파일
+
+- `app/services/video_paths.py` (신규)
+- `app/services/ai_job_service.py`
+- `app/services/ai_callback_service.py` (신규)
+- `app/schemas/answers.py`
+- `app/api/v1/answers.py`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- 편집 영상의 결정적 GCS 경로(`answers/{family_id}/{question_send_id}/edited.mp4`)를 만드는 로직이 `AiJobService`(editedVideoUploadUrl 발급용)와 새 콜백 서비스(video_clips.video_url 저장용) 양쪽에서 필요해서, `app/services/video_paths.py`의 `edited_video_object_path()`로 추출해 공유하고 `AiJobService`도 이걸 쓰도록 정리했다.
+- `AiCallbackRequest`/`AiCallbackResponse` 스키마를 추가했다. `segments`/`pipelineResults`는 AI 서버가 보낸 원본 키(`startMs` 등 camelCase)를 그대로 저장했다가 클립 상세 응답에 그대로 흘려보내야 해서, 별도 필드 변환 없이 `list[dict]`/`dict[str, dict]`로 그대로 받는다.
+- `AiCallbackService.handle_callback()`을 추가했다: `callbackToken` 검증(`answer_id`를 audience로 하는 JWT) → `answers` row 조회(`404`) → body `answerId`와 경로 `answer_id` 일치 확인(`400`) → 이미 `completed`/`failed`면 재처리 없이 그대로 반환(재시도 시 중복 처리/중복 broadcast 방지) → `pipelineResults.AI-008.status`가 `completed`면 `video_clips` insert + `video_clip_ai_results`에 `pipelineResults` 스냅샷 insert + `answers.status = completed`를 한 트랜잭션으로 커밋 후 `RealtimeService.broadcast_answer_completed()` 호출, `failed`면 `answers.status = failed`/`ai_retryable`/`ai_fallback_used` 갱신 후 `broadcast_answer_failed()` 호출.
+- `POST /api/v1/answers/{answer_id}/ai-callback` 라우트를 추가했다. 일반 사용자 인증(`get_current_user`)이 아니라 `Authorization: Bearer {callbackToken}`만으로 인증하며, `credentials`가 없으면 `401`을 반환한다.
+- 구현 중 `get_ai_job_service`/`get_realtime_service`가 `Settings`를 FastAPI DI로 주입받지 않고 서비스 내부에서 `get_settings()`(전역 캐시)를 직접 호출하고 있던 걸 발견했다 — `app.dependency_overrides[get_settings]`로 테스트용 시크릿을 주입해도 이 서비스들에는 반영되지 않아 `callbackToken` 서명 검증이 실제로는 잘못된(진짜 환경의) 시크릿으로 이뤄지는 버그였다. `get_current_user`가 이미 하고 있던 방식(`Depends(get_settings)`로 명시적으로 주입)에 맞춰 `get_ai_job_service`/`get_realtime_service`/`get_ai_callback_service` 세 곳 모두 `Settings`를 주입받아 서비스 생성자에 전달하도록 고쳤다.
+- `docs/API_DRAFT.md`의 콜백 절에 응답 바디(`{"answerId", "status"}`), 처리 순서(토큰 검증 우선 → 404 → answerId 불일치 400 → 이미 처리된 answer는 재처리 없이 200 → 알 수 없는 파이프라인 상태는 400), 그리고 이제 해소된 인증 방식 TODO 제거를 반영했다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 86 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+TestClient + SQLite in-memory + Fake `StorageService`/`RealtimeService`를 쓴 임시 스크립트로 성공/실패/토큰불일치/answerId불일치/중복호출(idempotent)/존재하지않는answer 시나리오를 전부 수동 검증했다(정식 pytest 테스트는 Task #17에서 작성 예정).
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-07 `RealtimeService`(Supabase Realtime Broadcast) 작성
+
+### 요청 프롬프트 요약
+
+`feat/AiIntegration-#17`의 다음 단계로, AI 처리 완료/실패를 `family:{family_id}` 채널에 Supabase Realtime Broadcast로 알리는 `RealtimeService`를 작성하도록 요청했다. `supabase-py`가 websocket 연결 없이 서버에서 단발성으로 broadcast를 보내는 방법을 지원하는지 불확실해 Supabase 공식 문서를 확인했다.
+
+### 생성/수정 파일
+
+- `app/services/realtime_service.py`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- Supabase 공식 문서 확인 결과, `supabase-py`(`realtime` 패키지)는 websocket 연결을 맺지 않고 서버에서 단발성으로 broadcast를 보내는 방식을 아직 지원하지 않는다. 대신 Supabase Realtime이 제공하는 서버 전용 broadcast REST API(`POST {SUPABASE_URL}/realtime/v1/api/broadcast`, body `{"messages": [{"topic", "event", "payload"}]}`, `apikey`/`Authorization: Bearer {service_role_key}` 헤더)를 `httpx`로 직접 호출하는 방식을 택했다.
+- `RealtimeService.broadcast_answer_completed(family_id, answer_id, thumbnail_url)`/`broadcast_answer_failed(family_id, answer_id)`를 추가했다. 채널은 `family:{family_id}`, 이벤트명은 `answer_status_updated`로 정하고 `docs/API_DRAFT.md`의 Realtime 절에 반영했다(기존엔 이벤트명이 문서에 없었음). `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`가 설정되지 않으면 조용히 skip하고, 호출 실패는 로그만 남기고 예외를 올리지 않는다(`AiJobService`와 동일한 fire-and-forget 패턴).
+- 아직 어디에서도 호출하지 않는다 — `ai-callback` 라우트(다음 작업)에서 처리 완료/실패 시점에 연결한다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 86 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+임시 스크립트로 `httpx.post`를 monkeypatch해서 실제 payload(topic/event/payload/헤더)가 의도대로 조립되는지 수동 확인했다(실제 네트워크 호출 없음).
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-07 `POST /api/v1/answers`에 AiJobService BackgroundTasks 연결
+
+### 요청 프롬프트 요약
+
+`feat/AiIntegration-#17`의 다음 단계로, 앞서 작성한 `AiJobService`를 `POST /api/v1/answers`(답변 제출) 엔드포인트에 `BackgroundTasks`로 연결하도록 요청했다.
+
+### 생성/수정 파일
+
+- `app/api/v1/answers.py`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `get_ai_job_service` 의존성을 추가하고(`get_storage_service`를 재사용), `submit_answer` 라우트에 `BackgroundTasks`와 `AiJobService` 의존성을 주입했다.
+- `service.submit_answer(...)`로 `answers` row가 커밋된 직후 `background_tasks.add_task(ai_job_service.dispatch_job, db, answer=answer)`를 등록해, 응답을 반환한 뒤 AI 서버로의 fire-and-forget 호출이 실행되도록 했다. FastAPI는 `yield` 기반 의존성(`get_db`)의 종료 코드를 background task 완료 이후 실행하므로 같은 요청 스코프의 `db` 세션을 백그라운드 작업에서 그대로 재사용해도 안전하다.
+- `ai_server_base_url`이 비어 있는 현재 상태에서는 `AiJobService.dispatch_job`이 즉시 skip하므로 기존 테스트 동작에는 영향이 없다. `ai_server_base_url`을 설정한 상태를 가정한 임시 스크립트로 payload 조립 결과를 수동 검증했다(실제 네트워크 호출은 하지 않음, `httpx.post`만 monkeypatch).
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 86 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-07 AI 서버 연동 준비: callbackToken/설정값 + StorageService 확장/AiJobService 작성
+
+### 요청 프롬프트 요약
+
+이슈 [#17](https://github.com/damso-app/backend/issues/17)로 `feat/AiIntegration-#17` 브랜치를 만들어, AI 서버 연동(fire-and-forget POST + 콜백)을 여러 작업으로 나눠 단계마다 확인받고 진행하도록 요청했다. 이번에 진행한 두 작업은 (1) `app/core/config.py` 설정값 추가와 `app/core/security.py`의 `create_ai_callback_token`/`verify_ai_callback_token` 구현, (2) `StorageService` 확장과 `AiJobService` 작성이다. `AiJobService`의 `questionId`/`providerMode` 필드 처리 방식이 모호해 AI 개발자 Notion `DAMSO-AI-API` 명세서를 직접 확인해 확정했다.
+
+### 생성/수정 파일
+
+- `app/core/config.py`
+- `app/core/security.py`
+- `.env.example`
+- `app/services/storage_service.py`
+- `app/services/ai_job_service.py`
+- `docs/DB_SCHEMA.md`
+- `docs/API_DRAFT.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `Settings`에 `app_base_url`, `ai_server_base_url`, `ai_job_request_timeout_seconds`, `ai_edited_video_upload_url_expire_minutes`, `ai_callback_token_expire_minutes`를 추가했다(`.env.example`도 동일하게 갱신, `AI_SERVER_BASE_URL=""`이면 미설정 상태로 취급).
+- `create_ai_callback_token`/`verify_ai_callback_token`을 추가했다. `answer_id`를 스코프로 하는 JWT이며 `aud="ai-callback"`으로 다른 토큰 종류와 구분한다.
+- `StorageService.generate_upload_url()`에 `expire_minutes` 오버라이드 파라미터를 추가해, 원본 업로드(기본 만료)와 편집 영상 업로드(120분 만료)에 같은 메서드를 재사용할 수 있게 했다.
+- `AiJobService`(신규)를 추가했다. `answer`를 받아 `jobId`/`answerId`/`questionId`/`ai_input_context` 5개 필드/`mediaUrl`(원본 signed GET)/`mediaDurationSeconds`/`editedVideoUploadUrl`(신규 signed PUT)/`includeDownstream`/`providerMode`/`callbackUrl`/`callbackToken`을 조립해 `POST {ai_server_base_url}/api/v1/ai/jobs`로 fire-and-forget 호출한다. `ai_server_base_url`이 비어 있으면 조용히 skip한다(실제 네트워크 호출 없음). `answers.ai_job_id`는 호출 성공 여부와 무관하게 항상 결정적으로 계산해 커밋한다.
+- AI 개발자 Notion `DAMSO-AI-API` 명세서를 확인해 `questionId`는 별도 question 테이블이 없어 `question_sends.id`를 그대로 쓰고, `providerMode`는 문서에는 없었지만 Notion 명세에는 있던 필드라 고정값 `"auto"`로 확정했다. `docs/API_DRAFT.md`/`docs/DB_SCHEMA.md`의 AI job 요청 예시와 필드 설명에 `providerMode`, `questionId` 매핑을 반영해 두 문서 간 드리프트를 정리했다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 86 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-06 답변 제출 시 `ai_input_context` 조립 구현
 
 ### 요청 프롬프트 요약
