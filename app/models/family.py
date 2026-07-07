@@ -32,7 +32,7 @@ class Family(Base):
     id: Mapped[int] = mapped_column(BIGINT_ID, primary_key=True, autoincrement=True)
     public_id: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    invite_code: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    invite_code: Mapped[str | None] = mapped_column(String(6), nullable=True)
     created_by_user_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey("users.id"),

@@ -118,7 +118,7 @@ def create_family_with_members(
         family = Family(
             public_id="family_public_id",
             name="담소 가족",
-            invite_code="ABC-123",
+            invite_code="ABC123",
             created_by_user_id=child.id,
             status=FamilyStatus.ACTIVE,
         )

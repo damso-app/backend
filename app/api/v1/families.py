@@ -19,6 +19,7 @@ from app.services.family_service import (
     AlreadyInFamilyError,
     FamilyService,
     InviteCodeNotFoundError,
+    OwnFamilyInviteError,
     RequiredAgreementsIncompleteError,
     RoleRequiredError,
 )
@@ -125,6 +126,8 @@ def join_family(
         raise _bad_request("User role is required") from exc
     except AlreadyInFamilyError as exc:
         raise _conflict("User already belongs to a family") from exc
+    except OwnFamilyInviteError as exc:
+        raise _conflict("Cannot join own family invitation") from exc
     except InviteCodeNotFoundError as exc:
         raise _not_found("Invite code was not found") from exc
 

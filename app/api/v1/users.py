@@ -81,7 +81,13 @@ def get_my_agreements(
     return AgreementsStatusResponse(
         requiredAgreementsCompleted=service.required_completed(statuses),
         agreements=[
-            AgreementStatusItem(type=status.type, agreed=status.agreed, agreedAt=status.agreed_at)
+            AgreementStatusItem(
+                type=status.type,
+                displayName=status.display_name,
+                description=status.description,
+                agreed=status.agreed,
+                agreedAt=status.agreed_at,
+            )
             for status in statuses
         ],
     )

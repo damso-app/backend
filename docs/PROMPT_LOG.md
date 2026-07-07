@@ -1,5 +1,125 @@
 # Prompt Log
 
+## 2026-07-08 초대 코드 기반 가족 연결 흐름 정리 및 보완
+
+### 요청 프롬프트 요약
+
+가족 초대 코드 화면과 코드 직접 입력 화면을 위한 백엔드 흐름을 정리하고 구현하도록 요청했다. 기존 API가 있으면 중복 생성하지 않고 `GET /api/v1/families/me/invitation`, `GET /api/v1/families/invitations/{invite_code}`, `POST /api/v1/families/join`을 정리/보완하며, 초대코드 normalize 정책, 필수 약관 4개/역할 검증, 이미 가족 소속인 사용자 처리, 본인 초대코드 join 방지, 비활성/삭제 가족 404, 중복 join 방지를 테스트와 문서에 반영하도록 요청했다.
+
+### 참고한 문서
+
+- `.agents/skills/damso-backend/SKILL.md`
+- `AGENTS.md`
+- `docs/MVP_SCOPE.md`
+- `docs/SCREEN_FLOW.md`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+
+### 생성/수정 파일
+
+- `app/api/v1/families.py`
+- `app/services/family_service.py`
+- `app/models/family.py`
+- `alembic/versions/20260708_0012_normalize_family_invite_codes.py`
+- `tests/test_onboarding_family.py`
+- `tests/test_models.py`
+- `tests/test_question_answer_loop.py`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/PROMPT_LOG.md`
+
+### 구현 판단
+
+- 기존 가족 API를 재사용했다. 새 endpoint를 만들지 않고 기존 `GET /families/me/invitation`, `GET /families/invitations/{invite_code}`, `POST /families/join`의 정책과 응답을 명확히 했다.
+- 초대코드는 내부 저장/조회 기준을 정규화된 대문자/숫자 6자리(`A7K28Q`)로 통일했다. API 응답과 invite URL에는 화면 표시용 `XXX-XXX` 형식(`A7K-28Q`)을 사용한다.
+- 입력 초대코드는 대문자 변환, 하이픈/공백 제거 후 조회한다. `"A7K-28Q"`, `"A7K28Q"`, `"a7k-28q"`, `"a7k 28q"`가 같은 코드로 처리된다.
+- 기존 `families.invite_code` 컬럼과 unique index를 재사용하되 저장 길이가 7자 표시형에서 6자 정규화형으로 바뀌므로 Alembic migration을 추가했다. 기존 DB의 `ABC-123` 같은 값은 `ABC123`으로 변환한다.
+- 가족 참여 전 필수 약관 4개 완료 여부와 역할 선택 여부를 확인한다. 참여 시 `users.role`을 `family_members.member_role`로 저장하고 `joined_at`을 기록한다.
+- 이미 활성 가족에 속한 사용자는 `409`를 반환한다. 본인이 만든 가족의 초대코드로 join하는 경우에는 더 명확하게 `409 Cannot join own family invitation`을 반환한다.
+- 없는 코드, 비활성 family, 삭제된 family는 모두 `404 Invite code was not found`로 처리해 개인정보 노출을 줄인다.
+- `(family_id, user_id)` unique index를 중복 join 방지의 DB 제약으로 유지하고, 동시 요청 등으로 `IntegrityError`가 발생하면 rollback 후 `409`로 매핑한다. MVP의 "사용자는 하나의 활성 가족에만 속한다" 정책은 서비스 계층에서 active membership 조회로 적용한다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q tests/test_onboarding_family.py tests/test_models.py
+# 32 passed, 1 warning
+
+.venv/bin/python -m pytest -q
+# 119 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260708_0012 (head)
+
+.venv/bin/alembic upgrade head
+# Running upgrade 20260708_0011 -> 20260708_0012, normalize family invite codes
+
+.venv/bin/alembic current
+# 20260708_0012 (head)
+```
+
+실제 비밀값, `DATABASE_URL`, JWT secret, API key는 기록하지 않았다. Kakao 로그인, 질문/답변/다이어리/영상 업로드 로직과 프론트엔드 코드는 변경하지 않았다.
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
+## 2026-07-08 사용자 필수 동의 항목 4개 기준 변경
+
+### 요청 프롬프트 요약
+
+최신 Figma 기준으로 Damso 자체 필수 동의 항목을 4개(`service_terms`, `privacy_policy`, `camera_microphone`, `data_usage`)로 변경하도록 요청했다. GET/POST 동의 API, 온보딩 완료 여부, 필수 동의 완료 판단, 테스트, API/DB 문서를 모두 4개 기준으로 맞추고, 기존 Kakao 로그인 로직과 프론트엔드 코드는 변경하지 않도록 요청했다.
+
+### 생성/수정 파일
+
+- `app/models/user_agreement.py`
+- `app/schemas/users.py`
+- `app/services/user_agreement_service.py`
+- `app/api/v1/users.py`
+- `alembic/versions/20260708_0011_update_user_agreement_types.py`
+- `tests/test_user_agreements.py`
+- `tests/test_models.py`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `AgreementType`을 `service_terms`, `privacy_policy`, `camera_microphone`, `data_usage` 4개로 변경했다.
+- `REQUIRED_AGREEMENT_TYPES`를 4개 필수 동의 기준으로 변경해, 하나라도 동의하지 않으면 `requiredAgreementsCompleted = false`가 되도록 했다. 이 로직을 사용하는 온보딩 완료 여부, 역할 선택 차단, 가족 API 차단도 같은 기준을 따른다.
+- `GET /api/v1/users/me/agreements`가 4개 항목을 항상 내려주도록 하고, Figma 표시명(`displayName`)과 설명(`description`)도 응답에 포함하도록 확장했다.
+- `POST /api/v1/users/me/agreements`가 4개 타입 저장을 지원하도록 enum/schema/service/test를 갱신했다.
+- Alembic migration을 추가해 기존 DB enum 값을 `terms_of_service` → `service_terms`, `camera_microphone_notice` → `camera_microphone`으로 변환하고, `data_usage`를 새 enum 값으로 추가했다. 새 `data_usage` 동의는 사용자 명시 동의가 필요하므로 기존 데이터에 자동 동의 row를 만들지 않는다.
+- 기존 3개 동의만 제출하면 완료 처리되지 않는 회귀 테스트를 추가했다.
+
+### 검증 결과
+
+```bash
+.venv/bin/python -m pytest -q
+# 110 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic heads
+# 20260708_0011 (head)
+
+.venv/bin/alembic upgrade head
+# Running upgrade 20260706_0010 -> 20260708_0011, update user agreement types
+
+.venv/bin/alembic current
+# 20260708_0011 (head)
+```
+
+첫 pytest 실행은 `.venv`에 `google-cloud-storage`가 설치되어 있지 않아 수집 단계에서 실패했다. `requirements-dev.txt` 설치 후 재실행해 전체 테스트가 통과했다. 실제 비밀값이나 환경변수 값은 기록하지 않았다.
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-07 AI 연동 플로우 리뷰 및 수정 (mediaUrl 만료, 콜백 레이스, 설정 누락 대응)
 
 ### 요청 프롬프트 요약

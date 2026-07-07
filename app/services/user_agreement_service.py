@@ -8,15 +8,37 @@ from app.models.user import User
 from app.models.user_agreement import AgreementType, UserAgreement
 
 REQUIRED_AGREEMENT_TYPES: tuple[AgreementType, ...] = (
-    AgreementType.TERMS_OF_SERVICE,
+    AgreementType.SERVICE_TERMS,
     AgreementType.PRIVACY_POLICY,
-    AgreementType.CAMERA_MICROPHONE_NOTICE,
+    AgreementType.CAMERA_MICROPHONE,
+    AgreementType.DATA_USAGE,
 )
+
+AGREEMENT_METADATA: dict[AgreementType, tuple[str, str]] = {
+    AgreementType.SERVICE_TERMS: (
+        "서비스 이용약관 동의",
+        "질문, 영상 답변, 다이어리 저장 기능 이용",
+    ),
+    AgreementType.PRIVACY_POLICY: (
+        "개인정보 처리 동의",
+        "이름, 가족 정보, 질문, 영상 정보 처리",
+    ),
+    AgreementType.CAMERA_MICROPHONE: (
+        "카메라·마이크 권한 안내",
+        "카메라 및 마이크 권한 허용이 필수",
+    ),
+    AgreementType.DATA_USAGE: (
+        "데이터 활용 동의",
+        "가족의 대화를 활용해 인공지능 처리",
+    ),
+}
 
 
 @dataclass(frozen=True)
 class AgreementStatus:
     type: AgreementType
+    display_name: str
+    description: str
     agreed: bool
     agreed_at: datetime | None
 
@@ -33,6 +55,8 @@ class UserAgreementService:
         return [
             AgreementStatus(
                 type=agreement_type,
+                display_name=AGREEMENT_METADATA[agreement_type][0],
+                description=AGREEMENT_METADATA[agreement_type][1],
                 agreed=agreements[agreement_type].agreed
                 if agreement_type in agreements
                 else False,

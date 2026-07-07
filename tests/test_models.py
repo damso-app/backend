@@ -76,7 +76,7 @@ def test_families_model_matches_db_schema() -> None:
     assert families.c.id.type.python_type is int
     assert families.c.public_id.type.length == 32
     assert families.c.name.type.length == 100
-    assert families.c.invite_code.type.length == 7
+    assert families.c.invite_code.type.length == 6
     assert families.c.invite_code.nullable is True
     assert families.c.created_by_user_id.nullable is False
     assert families.c.status.nullable is False
@@ -171,9 +171,10 @@ def test_auth_onboarding_enum_values_match_db_schema() -> None:
         "removed",
     ]
     assert [agreement_type.value for agreement_type in AgreementType] == [
-        "terms_of_service",
+        "service_terms",
         "privacy_policy",
-        "camera_microphone_notice",
+        "camera_microphone",
+        "data_usage",
     ]
     assert [depth.value for depth in QuestionDepth] == ["tiny", "medium", "deep"]
     assert [status.value for status in QuestionRecommendationStatus] == [
