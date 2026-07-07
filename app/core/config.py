@@ -1,8 +1,8 @@
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import AliasChoices, AnyUrl, Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices, AnyUrl, Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     app_name: str = "Damso API"
     environment: Literal["local", "development", "staging", "production"] = "local"
     api_v1_prefix: str = "/api/v1"
+    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     database_url: str | None = None
     supabase_url: AnyUrl | None = None
@@ -41,6 +42,15 @@ class Settings(BaseSettings):
     ai_job_request_timeout_seconds: float = 5.0
     ai_edited_video_upload_url_expire_minutes: int = 120
     ai_callback_token_expire_minutes: int = 120
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value: object) -> list[str] | object:
+        if value is None or value == "":
+            return []
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
 
 
 @lru_cache

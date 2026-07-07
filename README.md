@@ -25,6 +25,16 @@ python -m pip install -r requirements-dev.txt
 
 실제 환경변수는 `.env`에 두되, `.env`는 커밋하지 않는다. 필요한 키 이름은 `.env.example`을 참고한다.
 
+### CORS
+
+로컬 프론트 개발 서버에서 백엔드를 호출하려면 `CORS_ORIGINS`에 허용할 origin을 comma-separated 값으로 등록한다.
+
+```env
+CORS_ORIGINS="http://localhost:3000,http://localhost:3001"
+```
+
+프론트 배포 URL이 생기면 Cloud Run 환경변수의 같은 값에 배포 origin을 추가한다. `allow_credentials`를 사용하므로 wildcard origin(`*`)은 사용하지 않는다.
+
 ### Supabase PostgreSQL
 
 백엔드는 sync SQLAlchemy와 `psycopg` 드라이버로 Supabase PostgreSQL에 연결한다. 로컬 개발에서는 `.env`에 Supabase pooler 기반 `DATABASE_URL`을 넣는다.

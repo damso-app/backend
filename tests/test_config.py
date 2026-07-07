@@ -33,3 +33,25 @@ def test_kakao_oauth_settings_load_from_environment(monkeypatch) -> None:
         str(settings.frontend_oauth_callback_url)
         == "http://localhost:3000/oauth/kakao/callback"
     )
+
+
+def test_cors_origins_load_from_comma_separated_environment(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "CORS_ORIGINS",
+        "http://localhost:3000, http://localhost:3001,,",
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.cors_origins == [
+        "http://localhost:3000",
+        "http://localhost:3001",
+    ]
+
+
+def test_cors_origins_default_to_empty_list(monkeypatch) -> None:
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.cors_origins == []
