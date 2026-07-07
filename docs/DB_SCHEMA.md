@@ -51,7 +51,7 @@ AI 서버 요청(`DAMSO-AI-API` 명세 `POST /api/v1/ai/jobs` 기준)은 아래 
 - `jobId`: `"JOB_{answer_id}"` 형식. 백엔드가 결정적으로 만들어서 보내고, `answers.ai_job_id`에 저장한다. correlation의 기준은 여전히 `answer_id`이고(같은 값에서 파생), `jobId`는 AI 서버 쪽 참고/추적용이다.
 - `send_user`/`send_role`/`question`/`receive_user`/`receive_role`: 답변 제출 시점에 `AnswerService`가 조립해 `answers.ai_input_context`에 저장해둔 값을 그대로 실어 보낸다.
 - `mediaUrl`: 원본 영상 signed GET URL. job이 큐에서 대기하다 늦게 처리될 수 있어, 기본 GCS URL 만료(15분)가 아니라 `editedVideoUploadUrl`과 같은 `AI_EDITED_VIDEO_UPLOAD_URL_EXPIRE_MINUTES`(기본 120분)로 발급한다.
-- `mediaDurationSeconds`: `answers.video_duration_seconds`.
+- `mediaDurationSeconds`: `answers.video_duration_seconds`. 컬럼이 INTEGER라 항상 정수 초로 보낸다(AI 개발자 문서 예시의 `39.9`처럼 소수 초는 안 보냄).
 - `editedVideoUploadUrl`: 편집(자막 입힌) 영상을 AI 서버가 업로드할 signed PUT URL. 백엔드가 결정적 경로(`answers/{family_id}/{question_send_id}/edited.mp4`)로 미리 발급해서 같이 보낸다.
 - `includeDownstream`: 고정값 `true`.
 - `providerMode`: AI 서버 쪽 `DAMSO-AI-API` 명세(Notion)에 정의된 필드로, 현재는 고정값 `"auto"`만 보낸다.
