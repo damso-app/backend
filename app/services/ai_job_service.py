@@ -1,11 +1,12 @@
 import logging
 
 import httpx
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.core.security import AccessTokenError, create_ai_callback_token
-from app.models.answer import Answer
+from app.models.answer import Answer, AnswerStatus
 from app.services.storage_service import StorageService, StorageServiceError
 from app.services.video_paths import edited_video_object_path
 
@@ -51,6 +52,17 @@ class AiJobService:
             response.raise_for_status()
         except (httpx.HTTPError, StorageServiceError, AccessTokenError):
             logger.exception("Failed to dispatch AI job for answer_id=%s", answer.id)
+            return
+
+        # A fast job may already have completed and delivered its callback by the
+        # time this call returns, so only advance from submitted (never clobber a
+        # concurrently-set completed/failed status).
+        db.execute(
+            update(Answer)
+            .where(Answer.id == answer.id, Answer.status == AnswerStatus.SUBMITTED)
+            .values(status=AnswerStatus.PROCESSING)
+        )
+        db.commit()
 
     def _request_headers(self) -> dict[str, str]:
         if self._settings.ai_server_api_key is None:
