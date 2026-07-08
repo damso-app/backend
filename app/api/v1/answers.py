@@ -103,6 +103,11 @@ def get_ai_callback_service(
     "/upload-url",
     response_model=AnswerUploadUrlResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="답변 영상 업로드 URL 발급",
+    description=(
+        "답변 영상을 업로드할 수 있는 signed URL을 발급합니다. "
+        "실제 업로드 완료 후 별도로 답변 제출(POST /answers)을 호출해야 합니다."
+    ),
 )
 def create_answer_upload_url(
     payload: AnswerUploadUrlRequest,
@@ -129,7 +134,16 @@ def create_answer_upload_url(
     return AnswerUploadUrlResponse(uploadUrl=upload_url, expiresAt=expires_at)
 
 
-@router.post("", response_model=AnswerSubmitResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=AnswerSubmitResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="답변 제출",
+    description=(
+        "업로드된 영상으로 답변을 제출합니다. "
+        "제출 즉시 status는 processing이 되며, AI 처리 파이프라인이 백그라운드로 트리거됩니다."
+    ),
+)
 def submit_answer(
     payload: AnswerSubmitRequest,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -166,7 +180,15 @@ def submit_answer(
     )
 
 
-@router.get("/{answer_id}/clip", response_model=ClipDetailResponse)
+@router.get(
+    "/{answer_id}/clip",
+    response_model=ClipDetailResponse,
+    summary="답변 클립 상세 조회",
+    description=(
+        "AI 처리가 완료된 답변의 비디오 클립 상세 정보(영상 URL, 썸네일, 자막, 요약 등)를 "
+        "조회합니다. 처리가 아직 완료되지 않은 경우 404를 반환합니다."
+    ),
+)
 def get_answer_clip(
     answer_id: int,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -201,7 +223,15 @@ def get_answer_clip(
     )
 
 
-@router.post("/{answer_id}/ai-callback", response_model=AiCallbackResponse)
+@router.post(
+    "/{answer_id}/ai-callback",
+    response_model=AiCallbackResponse,
+    summary="AI 처리 결과 콜백 수신",
+    description=(
+        "AI 서버가 답변 영상 처리 결과(성공/실패)를 전달하는 콜백 엔드포인트입니다. "
+        "사용자 로그인 토큰이 아닌 별도의 callbackToken(Bearer)으로 인증합니다."
+    ),
+)
 def receive_ai_callback(
     answer_id: int,
     payload: AiCallbackRequest,
@@ -237,7 +267,15 @@ def receive_ai_callback(
     return AiCallbackResponse(answerId=answer.id, status=answer.status)
 
 
-@router.get("/questions", response_model=ReceivedQuestionsResponse)
+@router.get(
+    "/questions",
+    response_model=ReceivedQuestionsResponse,
+    summary="받은 질문 목록 조회",
+    description=(
+        "현재 사용자가 받은 질문 목록을 조회합니다. "
+        "unansweredOnly로 미답변만 필터링하거나 sort로 정렬 기준을 지정할 수 있습니다."
+    ),
+)
 def list_received_questions(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
@@ -256,7 +294,12 @@ def list_received_questions(
     )
 
 
-@router.get("/questions/{question_send_id}", response_model=ReceivedQuestionDetail)
+@router.get(
+    "/questions/{question_send_id}",
+    response_model=ReceivedQuestionDetail,
+    summary="받은 질문 상세 조회",
+    description="받은 질문 하나의 상세 정보를 조회합니다.",
+)
 def get_received_question(
     question_send_id: int,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -279,7 +322,12 @@ def get_received_question(
     )
 
 
-@router.patch("/questions/{question_send_id}/read", response_model=ReadQuestionResponse)
+@router.patch(
+    "/questions/{question_send_id}/read",
+    response_model=ReadQuestionResponse,
+    summary="받은 질문 읽음 처리",
+    description="받은 질문을 읽음 상태로 표시합니다.",
+)
 def mark_received_question_read(
     question_send_id: int,
     current_user: Annotated[User, Depends(get_current_user)],
