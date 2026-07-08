@@ -26,3 +26,5 @@ build/
 # CLAUDE
 .claude/
 CLAUDE.md
+
+/asset

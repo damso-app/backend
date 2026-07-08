@@ -497,15 +497,14 @@ def test_ai_job_service_uses_long_expiry_for_media_url(
 
     with session_factory() as db:
         answer = db.scalar(select(Answer).where(Answer.id == answer_id))
+        video_origin_url = answer.video_origin_url
         with mock.patch("httpx.post") as mock_post, mock.patch.object(
             storage_service, "generate_read_url", wraps=storage_service.generate_read_url
         ) as mock_read_url:
             mock_post.return_value.raise_for_status = mock.MagicMock()
             service.dispatch_job(db, answer=answer)
 
-    mock_read_url.assert_called_once_with(
-        gs_uri=answer.video_origin_url, expire_minutes=120
-    )
+    mock_read_url.assert_called_once_with(gs_uri=video_origin_url, expire_minutes=120)
 
 
 def test_ai_job_service_skips_when_app_base_url_missing(
