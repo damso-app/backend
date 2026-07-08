@@ -64,6 +64,29 @@ class AiJobService:
         )
         db.commit()
 
+    def get_job_progress(self, *, ai_job_id: str) -> dict[str, object] | None:
+        """Poll the AI server for a job's live progress (no result body).
+
+        Returns None if polling isn't possible or fails, so the caller can
+        fall back to the answer's own status without surfacing an error.
+        """
+        if not self._settings.ai_server_base_url:
+            return None
+
+        try:
+            response = httpx.get(
+                f"{self._settings.ai_server_base_url}{_AI_JOBS_PATH}/{ai_job_id}",
+                params={"includeResult": "false"},
+                headers=self._request_headers(),
+                timeout=self._settings.ai_job_request_timeout_seconds,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            logger.exception("Failed to poll AI job progress for ai_job_id=%s", ai_job_id)
+            return None
+
+        return response.json()
+
     def _request_headers(self) -> dict[str, str]:
         if self._settings.ai_server_api_key is None:
             return {}
