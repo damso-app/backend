@@ -292,6 +292,7 @@ def test_clip_detail_returns_signed_urls(
     assert response.status_code == 200
     body = response.json()
     assert body["answerId"] == answer_id
+    assert body["questionText"] == "질문"
     assert body["videoUrl"] == "signed:gs://damso-videos/edited.mp4"
     assert body["thumbnailUrl"] == "signed:gs://damso-videos/thumb.jpg"
     assert body["title"] == "제목"

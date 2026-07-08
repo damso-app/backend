@@ -26,6 +26,7 @@ class ClipGridResponse(ClipSchema):
 
 class ClipDetailResponse(ClipSchema):
     answer_id: int = Field(alias="answerId")
+    question_text: str = Field(alias="questionText")
     video_url: str | None = Field(default=None, alias="videoUrl")
     thumbnail_url: str | None = Field(default=None, alias="thumbnailUrl")
     transcript: str | None = None
