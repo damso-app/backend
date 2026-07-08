@@ -320,6 +320,60 @@ def test_ai_job_service_calls_httpx_when_configured(
             ), "receive_role from ai_input_context should be in payload"
 
 
+def test_ai_job_service_sends_authorization_header_when_api_key_configured(
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    """Test that dispatch_job sends an Authorization header when
+    ai_server_api_key is set, and omits it otherwise."""
+    ids = create_family_with_members(session_factory)
+    question_send_id = create_question_send(
+        session_factory,
+        sender_user_id=int(ids["child_id"]),
+        recipient_user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+    answer_id = create_answer(
+        session_factory,
+        question_send_id=question_send_id,
+        user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+
+    base_kwargs = {
+        "_env_file": None,
+        "jwt_secret_key": "unit-test-jwt-secret-with-at-least-32-bytes",
+        "jwt_algorithm": "HS256",
+        "ai_server_base_url": "https://ai-server.example.com",
+        "ai_job_request_timeout_seconds": 5.0,
+        "ai_edited_video_upload_url_expire_minutes": 120,
+        "ai_callback_token_expire_minutes": 120,
+        "app_base_url": "https://app.example.com",
+        "api_v1_prefix": "/api/v1",
+        "gcs_bucket_name": "test-bucket",
+    }
+
+    with_key_settings = Settings(**base_kwargs, ai_server_api_key=SecretStr("secret-ai-key"))
+    service = AiJobService(settings=with_key_settings, storage_service=FakeStorageService())
+    with session_factory() as db:
+        answer = db.scalar(select(Answer).where(Answer.id == answer_id))
+        with mock.patch("httpx.post") as mock_post:
+            mock_post.return_value.raise_for_status = mock.MagicMock()
+            service.dispatch_job(db, answer=answer)
+            headers = mock_post.call_args[1]["headers"]
+            assert headers == {"Authorization": "Bearer secret-ai-key"}
+
+    without_key_settings = Settings(**base_kwargs)
+    service = AiJobService(settings=without_key_settings, storage_service=FakeStorageService())
+    with session_factory() as db:
+        answer = db.scalar(select(Answer).where(Answer.id == answer_id))
+        with mock.patch("httpx.post") as mock_post:
+            mock_post.return_value.raise_for_status = mock.MagicMock()
+            service.dispatch_job(db, answer=answer)
+            headers = mock_post.call_args[1]["headers"]
+            assert headers == {}
+
+
 def test_ai_job_service_sets_ai_job_id_before_http_call(
     session_factory: sessionmaker[Session],
     auth_settings: Settings,

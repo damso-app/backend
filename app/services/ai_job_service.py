@@ -45,11 +45,19 @@ class AiJobService:
             response = httpx.post(
                 f"{self._settings.ai_server_base_url}{_AI_JOBS_PATH}",
                 json=payload,
+                headers=self._request_headers(),
                 timeout=self._settings.ai_job_request_timeout_seconds,
             )
             response.raise_for_status()
         except (httpx.HTTPError, StorageServiceError, AccessTokenError):
             logger.exception("Failed to dispatch AI job for answer_id=%s", answer.id)
+
+    def _request_headers(self) -> dict[str, str]:
+        if self._settings.ai_server_api_key is None:
+            return {}
+        return {
+            "Authorization": f"Bearer {self._settings.ai_server_api_key.get_secret_value()}"
+        }
 
     def _build_payload(self, answer: Answer) -> dict[str, object]:
         object_path = edited_video_object_path(
