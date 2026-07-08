@@ -7,11 +7,13 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import bearer_scheme, get_current_user
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
+from app.models.answer import AnswerStatus
 from app.models.question_send import QuestionSend, QuestionSendStatus
 from app.models.user import User
 from app.schemas.answers import (
     AiCallbackRequest,
     AiCallbackResponse,
+    AnswerProgressResponse,
     AnswerSubmitRequest,
     AnswerSubmitResponse,
     AnswerUploadUrlRequest,
@@ -221,6 +223,49 @@ def get_answer_clip(
         oneLineSummary=video_clip.one_line_summary,
         emotionTags=video_clip.emotion_tags,
         fourcutTitle=video_clip.fourcut_title,
+    )
+
+
+@router.get(
+    "/{answer_id}/progress",
+    response_model=AnswerProgressResponse,
+    summary="답변 AI 처리 진행률 조회",
+    description=(
+        "답변의 AI 처리 진행 상태를 조회합니다. status가 processing이 아니면 AI 서버를 호출하지 "
+        "않고 즉시 반환합니다. processing인 경우 AI 서버의 job 상태를 폴링해서 진행률, 현재 "
+        "처리 단계, 예상 남은 시간을 함께 내려줍니다."
+    ),
+)
+def get_answer_progress(
+    answer_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    clip_service: Annotated[ClipService, Depends(get_clip_service)],
+    ai_job_service: Annotated[AiJobService, Depends(get_ai_job_service)],
+) -> AnswerProgressResponse:
+    try:
+        answer = clip_service.get_answer_for_family(db, user=current_user, answer_id=answer_id)
+    except ActiveFamilyRequiredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except AnswerNotFoundError as exc:
+        raise _not_found("Answer was not found") from exc
+
+    if answer.status != AnswerStatus.PROCESSING or answer.ai_job_id is None:
+        return AnswerProgressResponse(answerId=answer.id, status=answer.status)
+
+    progress = ai_job_service.get_job_progress(ai_job_id=answer.ai_job_id)
+    if progress is None:
+        return AnswerProgressResponse(answerId=answer.id, status=answer.status)
+
+    return AnswerProgressResponse(
+        answerId=answer.id,
+        status=answer.status,
+        progress=progress.get("progress"),
+        currentStepLabel=progress.get("currentStepLabel"),
+        estimatedRemainingSeconds=progress.get("estimatedRemainingSeconds"),
     )
 
 

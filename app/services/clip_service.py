@@ -60,6 +60,21 @@ class ClipService:
         user: User,
         answer_id: int,
     ) -> tuple[Answer, VideoClip]:
+        answer = self.get_answer_for_family(db, user=user, answer_id=answer_id)
+
+        video_clip = db.scalar(select(VideoClip).where(VideoClip.answer_id == answer_id).limit(1))
+        if video_clip is None:
+            raise ClipNotReadyError("Clip is not ready yet")
+
+        return answer, video_clip
+
+    def get_answer_for_family(
+        self,
+        db: Session,
+        *,
+        user: User,
+        answer_id: int,
+    ) -> Answer:
         membership = self._require_active_membership(db, user_id=user.id)
 
         answer = db.scalar(
@@ -74,11 +89,7 @@ class ClipService:
         if answer is None:
             raise AnswerNotFoundError("Answer was not found")
 
-        video_clip = db.scalar(select(VideoClip).where(VideoClip.answer_id == answer_id).limit(1))
-        if video_clip is None:
-            raise ClipNotReadyError("Clip is not ready yet")
-
-        return answer, video_clip
+        return answer
 
     def resolve_thumbnail_url(self, answer: Answer) -> str | None:
         if answer.thumbnail_url is None:

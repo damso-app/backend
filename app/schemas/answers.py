@@ -44,3 +44,13 @@ class AiCallbackRequest(AnswerSchema):
 class AiCallbackResponse(AnswerSchema):
     answer_id: int = Field(alias="answerId")
     status: AnswerStatus
+
+
+class AnswerProgressResponse(AnswerSchema):
+    answer_id: int = Field(alias="answerId")
+    status: AnswerStatus
+    progress: int | None = None
+    current_step_label: str | None = Field(default=None, alias="currentStepLabel")
+    estimated_remaining_seconds: float | None = Field(
+        default=None, alias="estimatedRemainingSeconds"
+    )
