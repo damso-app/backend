@@ -34,7 +34,7 @@ class AnswerSubmitResponse(AnswerSchema):
 
 
 class AiCallbackRequest(AnswerSchema):
-    answer_id: str = Field(alias="answerId")
+    answer_id: int = Field(alias="answerId")
     transcript: str | None = None
     segments: list[dict] | None = None
     warnings: list[str] | None = None
