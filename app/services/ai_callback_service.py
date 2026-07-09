@@ -72,7 +72,7 @@ class AiCallbackService:
         if answer is None:
             raise AnswerNotFoundError("Answer was not found")
 
-        if payload.answer_id != str(answer_id):
+        if payload.answer_id != answer_id:
             raise AnswerIdMismatchError("answerId in the request body does not match the path")
 
         return self.apply_result(db, answer=answer, payload=payload)
