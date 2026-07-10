@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from unittest import mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,6 +19,7 @@ from app.models.family_member import FamilyMember, FamilyMemberRole, FamilyMembe
 from app.models.question_recommendation import QuestionDepth
 from app.models.question_send import QuestionSend, QuestionSendSource, QuestionSendStatus
 from app.models.user import User, UserRole
+from app.services.answer_service import AlreadyAnsweredError, AnswerService
 from app.services.storage_service import StorageService
 
 
@@ -329,6 +331,62 @@ def test_submit_answer_twice_conflicts(
 
     second_response = client.post("/api/v1/answers", headers=headers, json=payload)
     assert second_response.status_code == 409
+
+
+def test_submit_answer_race_condition_returns_conflict_not_500(
+    session_factory: sessionmaker[Session],
+) -> None:
+    """Two near-simultaneous submissions can both pass the check in
+    _require_answerable_question_send before either commits. The unique index
+    (ux_answers_question_send_id) is the real guard — its IntegrityError must
+    surface as AlreadyAnsweredError, not an unhandled 500."""
+    ids = create_family_with_members(session_factory)
+    question_send_id = create_question_send(
+        session_factory,
+        sender_user_id=int(ids["child_id"]),
+        recipient_user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+
+    with session_factory() as db:
+        mother = db.scalar(select(User).where(User.public_id == ids["mother_public_id"]))
+        question_send = db.scalar(
+            select(QuestionSend).where(QuestionSend.id == question_send_id)
+        )
+
+        # Simulate a concurrent request that already won the race and
+        # committed its Answer row after this request's own check already
+        # passed (that check itself is bypassed below via mock.patch.object,
+        # since a single synchronous session can't otherwise reproduce the
+        # interleaving).
+        db.add(
+            Answer(
+                question_send_id=question_send_id,
+                user_id=mother.id,
+                family_id=question_send.family_id,
+                video_origin_url="gs://test-bucket/answers/1/1/original.mp4",
+                video_mime_type="video/mp4",
+                video_duration_seconds=10,
+                video_size_bytes=1024,
+            )
+        )
+        db.commit()
+
+        service = AnswerService(storage_service=FakeStorageService())
+        with mock.patch.object(
+            AnswerService,
+            "_require_answerable_question_send",
+            return_value=question_send,
+        ):
+            with pytest.raises(AlreadyAnsweredError):
+                service.submit_answer(
+                    db,
+                    user=mother,
+                    question_send_id=question_send_id,
+                    video_mime_type="video/mp4",
+                    video_duration_seconds=10,
+                    video_size_bytes=1024,
+                )
 
 
 def test_submit_answer_missing_field_is_rejected(
