@@ -21,6 +21,7 @@ from app.models.question_send import QuestionSend, QuestionSendSource, QuestionS
 from app.models.user import User, UserRole
 from app.models.video_clip import VideoClip
 from app.services.ai_callback_service import AiCallbackService
+from app.services.ai_job_service import AiJobService
 from app.services.reconciliation_service import ReconciliationService
 from app.services.storage_service import StorageService
 
@@ -28,6 +29,15 @@ from app.services.storage_service import StorageService
 class FakeStorageService(StorageService):
     def __init__(self) -> None:  # no super().__init__: avoid touching real GCS/ADC
         pass
+
+    def generate_upload_url(
+        self,
+        *,
+        object_path: str,
+        content_type: str,
+        expire_minutes: int | None = None,
+    ) -> tuple[str, datetime]:
+        return (f"signed-upload:{object_path}", datetime.now(UTC))
 
     def generate_read_url(self, *, gs_uri: str, expire_minutes: int | None = None) -> str:
         return f"signed:{gs_uri}"
@@ -40,6 +50,7 @@ def auth_settings() -> Settings:
         jwt_secret_key="unit-test-jwt-secret-with-at-least-32-bytes",
         jwt_algorithm="HS256",
         gcs_bucket_name="test-bucket",
+        app_base_url="https://backend.example.com",
         ai_server_base_url="https://ai-server.example.com",
         ai_job_request_timeout_seconds=5.0,
         ai_stuck_processing_threshold_minutes=20,
@@ -291,6 +302,87 @@ def test_reconcile_only_targets_stuck_processing_answers(
     assert summary.skipped == 1
 
 
+def test_reconcile_redispatches_stuck_submitted_answer(
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    """A dispatch that never reached the AI server leaves the answer stuck at
+    SUBMITTED (never advances to PROCESSING), so it must be retried by
+    re-running dispatch_job rather than polled like a PROCESSING answer."""
+    ids = create_family_with_members(session_factory)
+    question_send_id = create_question_send(
+        session_factory,
+        sender_user_id=ids["child_id"],
+        recipient_user_id=ids["mother_id"],
+        family_id=ids["family_id"],
+    )
+    answer_id = create_answer(
+        session_factory,
+        question_send_id=question_send_id,
+        user_id=ids["mother_id"],
+        family_id=ids["family_id"],
+        status=AnswerStatus.SUBMITTED,
+        ai_job_id=None,
+        updated_at=_stale_time(),
+    )
+
+    service = ReconciliationService(
+        settings=auth_settings,
+        ai_job_service=AiJobService(settings=auth_settings, storage_service=FakeStorageService()),
+    )
+
+    with session_factory() as db, mock.patch("httpx.post") as mock_post, mock.patch(
+        "httpx.get"
+    ) as mock_get:
+        mock_post.return_value.raise_for_status = mock.MagicMock()
+        summary = service.reconcile_stuck_answers(db)
+        mock_get.assert_not_called()
+        mock_post.assert_called_once()
+
+    assert summary.checked == 1
+    assert summary.redispatched == 1
+    assert summary.completed == 0
+    assert summary.failed == 0
+    assert summary.skipped == 0
+
+    with session_factory() as db:
+        answer = db.scalar(select(Answer).where(Answer.id == answer_id))
+        assert answer.status == AnswerStatus.PROCESSING
+        assert answer.ai_job_id == f"JOB_{answer_id}"
+
+
+def test_reconcile_leaves_fresh_submitted_answer_alone(
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    question_send_id = create_question_send(
+        session_factory,
+        sender_user_id=ids["child_id"],
+        recipient_user_id=ids["mother_id"],
+        family_id=ids["family_id"],
+    )
+    create_answer(
+        session_factory,
+        question_send_id=question_send_id,
+        user_id=ids["mother_id"],
+        family_id=ids["family_id"],
+        status=AnswerStatus.SUBMITTED,
+    )
+
+    service = ReconciliationService(
+        settings=auth_settings,
+        ai_job_service=AiJobService(settings=auth_settings, storage_service=FakeStorageService()),
+    )
+
+    with session_factory() as db, mock.patch("httpx.post") as mock_post:
+        summary = service.reconcile_stuck_answers(db)
+        mock_post.assert_not_called()
+
+    assert summary.checked == 0
+    assert summary.redispatched == 0
+
+
 def test_reconcile_completes_stuck_answer_from_poll(
     session_factory: sessionmaker[Session],
     auth_settings: Settings,
@@ -533,4 +625,10 @@ def test_reconcile_endpoint_accepts_correct_token(client: TestClient) -> None:
         headers={"Authorization": "Bearer trigger-secret"},
     )
     assert response.status_code == 200
-    assert response.json() == {"checked": 0, "completed": 0, "failed": 0, "skipped": 0}
+    assert response.json() == {
+        "checked": 0,
+        "completed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "redispatched": 0,
+    }
