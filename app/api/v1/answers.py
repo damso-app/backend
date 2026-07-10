@@ -233,7 +233,10 @@ def get_answer_clip(
     description=(
         "답변의 AI 처리 진행 상태를 조회합니다. status가 processing이 아니면 AI 서버를 호출하지 "
         "않고 즉시 반환합니다. processing인 경우 AI 서버의 job 상태를 폴링해서 진행률, 현재 "
-        "처리 단계, 예상 남은 시간을 함께 내려줍니다."
+        "처리 단계, 예상 남은 시간, aiJobStatus(AI 서버 자체 job 상태)를 함께 내려줍니다. "
+        "status는 이 백엔드의 answers.status를 그대로 반영하므로, AI 서버가 처리를 끝내고도 "
+        "콜백이 아직 도착하지 않은 구간에서는 status=processing이면서 aiJobStatus=completed일 "
+        "수 있다 — 이 조합으로 '처리 중'과 '완료 후 콜백 대기 중'을 구분할 수 있다."
     ),
 )
 def get_answer_progress(
@@ -266,6 +269,7 @@ def get_answer_progress(
         progress=progress.get("progress"),
         currentStepLabel=progress.get("currentStepLabel"),
         estimatedRemainingSeconds=progress.get("estimatedRemainingSeconds"),
+        aiJobStatus=progress.get("status"),
     )
 
 

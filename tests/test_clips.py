@@ -399,6 +399,7 @@ def test_progress_returns_immediately_for_non_processing_answer(
         "progress": None,
         "currentStepLabel": None,
         "estimatedRemainingSeconds": None,
+        "aiJobStatus": None,
     }
 
 
@@ -471,6 +472,52 @@ def test_progress_polls_ai_server_when_processing(
     assert body["progress"] == 35
     assert body["currentStepLabel"] == "AI-002 STT 처리 중"
     assert body["estimatedRemainingSeconds"] == 21.57
+    assert body["aiJobStatus"] == "processing"
+
+
+def test_progress_reports_ai_job_status_completed_before_callback_arrives(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    """The AI server can finish (and even report status=completed on its own
+    job-status poll) before its callback actually reaches us. status here
+    stays "processing" (our own DB truth, only the callback flips it), but
+    aiJobStatus must surface the AI server's completed state distinctly so
+    the frontend can show a "finishing up" state instead of a generic one."""
+    ids = create_family_with_members(session_factory)
+    answer_id = create_answer(
+        session_factory,
+        family_id=int(ids["family_id"]),
+        user_id=int(ids["mother_id"]),
+        status=AnswerStatus.PROCESSING,
+        ai_job_id="JOB_42",
+    )
+
+    with mock.patch("httpx.get") as mock_get:
+        mock_get.return_value = httpx.Response(
+            200,
+            json={
+                "jobId": "JOB_42",
+                "status": "completed",
+                "progress": 100,
+                "currentStepLabel": "AI-009 네컷 생성 완료",
+                "estimatedRemainingSeconds": 0,
+                "hasResult": True,
+                "resultOmitted": True,
+                "resultDelivery": "callback",
+            },
+            request=httpx.Request("GET", "https://ai-server.example.com/api/v1/ai/jobs/JOB_42"),
+        )
+        response = client.get(
+            f"/api/v1/answers/{answer_id}/progress",
+            headers=auth_headers(str(ids["mother_public_id"]), auth_settings),
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "processing"
+    assert body["aiJobStatus"] == "completed"
 
 
 def test_progress_falls_back_when_ai_poll_fails(
