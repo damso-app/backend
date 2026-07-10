@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.answer import AnswerStatus
 
@@ -34,11 +35,30 @@ class AnswerSubmitResponse(AnswerSchema):
 
 
 class AiCallbackRequest(AnswerSchema):
-    answer_id: int = Field(alias="answerId")
+    answer_id: int | str = Field(alias="answerId")
     transcript: str | None = None
     segments: list[dict] | None = None
     warnings: list[str] | None = None
     pipeline_results: dict[str, dict] = Field(alias="pipelineResults")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_result(cls, data: Any) -> Any:
+        # The AI server has been observed nesting transcript/segments/
+        # pipelineResults under a "result" key (matching its job-status GET
+        # response shape) instead of the documented flat callback body. Accept
+        # either: fall back to the nested value only when the flat one is
+        # absent, so this stays a no-op once the AI server sends flat bodies.
+        if not isinstance(data, dict):
+            return data
+        result = data.get("result")
+        if not isinstance(result, dict):
+            return data
+        merged = dict(data)
+        for key in ("transcript", "segments", "warnings", "pipelineResults"):
+            if key not in merged and key in result:
+                merged[key] = result[key]
+        return merged
 
 
 class AiCallbackResponse(AnswerSchema):

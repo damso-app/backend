@@ -783,6 +783,102 @@ def test_ai_callback_happy_path_completed(
         assert ai_result.ai_raw_response == payload["pipelineResults"]
 
 
+def test_ai_callback_accepts_result_nested_body(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    """The AI server has been observed nesting transcript/segments/
+    pipelineResults under a "result" key instead of the documented flat
+    body — the callback endpoint must still accept it."""
+    ids = create_family_with_members(session_factory)
+    question_send_id = create_question_send(
+        session_factory,
+        sender_user_id=int(ids["child_id"]),
+        recipient_user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+    answer_id = create_answer(
+        session_factory,
+        question_send_id=question_send_id,
+        user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+
+    callback_token = create_ai_callback_token(answer_id=answer_id, settings=auth_settings)
+
+    payload = {
+        "answerId": answer_id,
+        "result": {
+            "transcript": "이건 테스트 영상입니다.",
+            "segments": [{"start": 0, "end": 5, "text": "이건"}],
+            "pipelineResults": {
+                "AI-008": {"status": "completed", "retryable": False},
+                "AI-003": {"diaryTitle": "테스트 다이어리"},
+            },
+        },
+    }
+
+    with mock.patch.object(RealtimeService, "broadcast_answer_completed"):
+        response = client.post(
+            f"/api/v1/answers/{answer_id}/ai-callback",
+            headers=bearer_headers(callback_token),
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+
+    with session_factory() as db:
+        answer = db.scalar(select(Answer).where(Answer.id == answer_id))
+        assert answer.status == AnswerStatus.COMPLETED
+        video_clip = db.scalar(select(VideoClip).where(VideoClip.answer_id == answer_id))
+        assert video_clip is not None
+        assert video_clip.transcript == "이건 테스트 영상입니다."
+        assert video_clip.title == "테스트 다이어리"
+
+
+def test_ai_callback_accepts_non_numeric_answer_id_string(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    """Some AI server docs show answerId as a prefixed id (e.g. "ans_001")
+    rather than the plain numeric string this backend actually issues —
+    the schema must not reject that at the type level."""
+    ids = create_family_with_members(session_factory)
+    question_send_id = create_question_send(
+        session_factory,
+        sender_user_id=int(ids["child_id"]),
+        recipient_user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+    answer_id = create_answer(
+        session_factory,
+        question_send_id=question_send_id,
+        user_id=int(ids["mother_id"]),
+        family_id=int(ids["family_id"]),
+    )
+
+    callback_token = create_ai_callback_token(answer_id=answer_id, settings=auth_settings)
+
+    payload = {
+        "answerId": f"ans_{answer_id}",
+        "pipelineResults": {"AI-008": {"status": "failed", "retryable": True}},
+    }
+
+    response = client.post(
+        f"/api/v1/answers/{answer_id}/ai-callback",
+        headers=bearer_headers(callback_token),
+        json=payload,
+    )
+
+    # A prefixed answerId doesn't match this backend's plain numeric answer_id,
+    # so it's correctly rejected as a mismatch (400) rather than a schema-level
+    # 422 — the important thing is that parsing itself doesn't blow up.
+    assert response.status_code == 400
+
+
 def test_ai_callback_happy_path_failed(
     client: TestClient,
     session_factory: sessionmaker[Session],
