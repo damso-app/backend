@@ -92,3 +92,28 @@ class StorageService:
             service_account_email=self._settings.gcs_signer_service_account,
             access_token=self._access_token(),
         )
+
+    def download_to_file(self, *, gs_uri: str, destination_path: str) -> None:
+        """Download an object directly (server-side, via the GCS client
+        library) rather than through a signed URL — used when this backend
+        itself needs the bytes, not a caller we're delegating access to."""
+        if not self._settings.gcs_bucket_name:
+            raise StorageNotConfiguredError("GCS_BUCKET_NAME is not configured")
+
+        prefix = f"gs://{self._settings.gcs_bucket_name}/"
+        if not gs_uri.startswith(prefix):
+            raise StorageServiceError(f"Unexpected GCS URI for this bucket: {gs_uri}")
+        object_path = gs_uri.removeprefix(prefix)
+
+        bucket = self.client.bucket(self._settings.gcs_bucket_name)
+        bucket.blob(object_path).download_to_filename(destination_path)
+
+    def upload_file(self, *, object_path: str, source_path: str, content_type: str) -> str:
+        """Upload a local file directly (server-side) and return its gs:// URI."""
+        if not self._settings.gcs_bucket_name:
+            raise StorageNotConfiguredError("GCS_BUCKET_NAME is not configured")
+
+        bucket = self.client.bucket(self._settings.gcs_bucket_name)
+        blob = bucket.blob(object_path)
+        blob.upload_from_filename(source_path, content_type=content_type)
+        return f"gs://{self._settings.gcs_bucket_name}/{object_path}"
