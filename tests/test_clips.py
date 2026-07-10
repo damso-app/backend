@@ -141,6 +141,7 @@ def create_answer(
     created_at: datetime | None = None,
     thumbnail_url: str | None = None,
     ai_job_id: str | None = None,
+    video_duration_seconds: int | None = None,
 ) -> int:
     with session_factory() as db:
         question_send = QuestionSend(
@@ -162,6 +163,7 @@ def create_answer(
             status=status,
             thumbnail_url=thumbnail_url,
             ai_job_id=ai_job_id,
+            video_duration_seconds=video_duration_seconds,
             submitted_at=created_at or datetime.now(UTC),
             created_at=created_at or datetime.now(UTC),
         )
@@ -277,6 +279,7 @@ def test_clip_detail_returns_signed_urls(
         family_id=int(ids["family_id"]),
         user_id=int(ids["mother_id"]),
         thumbnail_url="gs://damso-videos/thumb.jpg",
+        video_duration_seconds=42,
     )
     with session_factory() as db:
         db.add(
@@ -300,6 +303,7 @@ def test_clip_detail_returns_signed_urls(
     assert body["answerId"] == answer_id
     assert body["questionText"] == "질문"
     assert body["videoUrl"] == "signed:gs://damso-videos/edited.mp4"
+    assert body["videoDurationSeconds"] == 42
     assert body["thumbnailUrl"] == "signed:gs://damso-videos/thumb.jpg"
     assert body["title"] == "제목"
     assert body["quote"] == "명대사"

@@ -225,6 +225,7 @@ def get_answer_clip(
         answerId=answer.id,
         questionText=answer.question_send.question_text,
         videoUrl=service.resolve_video_url(video_clip),
+        videoDurationSeconds=answer.video_duration_seconds,
         thumbnailUrl=service.resolve_thumbnail_url(answer),
         transcript=video_clip.transcript,
         transcriptSegments=video_clip.transcript_segments,
