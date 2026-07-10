@@ -54,6 +54,7 @@ from app.services.question_loop_service import (
 )
 from app.services.realtime_service import RealtimeService
 from app.services.storage_service import StorageService
+from app.services.thumbnail_service import ThumbnailService
 
 router = APIRouter(prefix="/answers", tags=["answers"])
 
@@ -83,6 +84,13 @@ def get_ai_job_service(
     storage_service: Annotated[StorageService, Depends(get_storage_service)],
 ) -> AiJobService:
     return AiJobService(settings=settings, storage_service=storage_service)
+
+
+def get_thumbnail_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+    storage_service: Annotated[StorageService, Depends(get_storage_service)],
+) -> ThumbnailService:
+    return ThumbnailService(settings=settings, storage_service=storage_service)
 
 
 def get_realtime_service(settings: Annotated[Settings, Depends(get_settings)]) -> RealtimeService:
@@ -152,6 +160,7 @@ def submit_answer(
     db: Annotated[Session, Depends(get_db)],
     service: Annotated[AnswerService, Depends(get_answer_service)],
     ai_job_service: Annotated[AiJobService, Depends(get_ai_job_service)],
+    thumbnail_service: Annotated[ThumbnailService, Depends(get_thumbnail_service)],
     background_tasks: BackgroundTasks,
 ) -> AnswerSubmitResponse:
     try:
@@ -173,6 +182,7 @@ def submit_answer(
         raise _unsupported_media_type(str(exc)) from exc
 
     background_tasks.add_task(ai_job_service.dispatch_job, db, answer=answer)
+    background_tasks.add_task(thumbnail_service.generate_thumbnail, db, answer=answer)
 
     return AnswerSubmitResponse(
         answerId=answer.id,
