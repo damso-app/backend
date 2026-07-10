@@ -28,6 +28,7 @@ class ClipDetailResponse(ClipSchema):
     answer_id: int = Field(alias="answerId")
     question_text: str = Field(alias="questionText")
     video_url: str | None = Field(default=None, alias="videoUrl")
+    video_duration_seconds: int | None = Field(default=None, alias="videoDurationSeconds")
     thumbnail_url: str | None = Field(default=None, alias="thumbnailUrl")
     transcript: str | None = None
     transcript_segments: list | None = Field(default=None, alias="transcriptSegments")
