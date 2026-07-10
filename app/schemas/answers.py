@@ -74,3 +74,9 @@ class AnswerProgressResponse(AnswerSchema):
     estimated_remaining_seconds: float | None = Field(
         default=None, alias="estimatedRemainingSeconds"
     )
+    # The AI server's own job status (e.g. "processing"/"completed"/"failed"),
+    # distinct from `status` above which is always this backend's answers.status.
+    # AI-side "completed" can arrive well before our callback does, so the
+    # frontend can use this to show a distinct "finishing up" state instead of
+    # a generic "processing" the whole time.
+    ai_job_status: str | None = Field(default=None, alias="aiJobStatus")
