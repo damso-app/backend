@@ -10,6 +10,7 @@ from app.core.config import Settings, get_settings
 from app.models.answer import Answer, AnswerStatus
 from app.schemas.answers import AiCallbackRequest
 from app.services.ai_callback_service import AiCallbackService, InvalidPipelineResultError
+from app.services.ai_job_service import AiJobService
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class ReconciliationSummary:
     completed: int = 0
     failed: int = 0
     skipped: int = 0
+    redispatched: int = 0
 
 
 class ReconciliationService:
@@ -31,9 +33,11 @@ class ReconciliationService:
         *,
         settings: Settings | None = None,
         callback_service: AiCallbackService | None = None,
+        ai_job_service: AiJobService | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         self._callback_service = callback_service or AiCallbackService(settings=self._settings)
+        self._ai_job_service = ai_job_service or AiJobService(settings=self._settings)
 
     def reconcile_stuck_answers(self, db: Session) -> ReconciliationSummary:
         if not self._settings.ai_server_base_url:
@@ -42,7 +46,7 @@ class ReconciliationService:
         cutoff = datetime.now(UTC) - timedelta(
             minutes=self._settings.ai_stuck_processing_threshold_minutes
         )
-        stuck_answers = list(
+        stuck_processing = list(
             db.scalars(
                 select(Answer).where(
                     Answer.status == AnswerStatus.PROCESSING,
@@ -51,13 +55,33 @@ class ReconciliationService:
                 )
             )
         )
+        # A dispatch attempt that never reached the AI server (network failure,
+        # missing config at the time, ...) leaves the answer stuck at SUBMITTED
+        # forever — it never advances to PROCESSING, so the query above never
+        # finds it. Retry dispatch for these instead of just polling a job that
+        # may never have been created.
+        stuck_submitted = list(
+            db.scalars(
+                select(Answer).where(
+                    Answer.status == AnswerStatus.SUBMITTED,
+                    Answer.updated_at < cutoff,
+                )
+            )
+        )
 
         summary = {"completed": 0, "failed": 0, "skipped": 0}
-        for answer in stuck_answers:
+        for answer in stuck_processing:
             outcome = self._reconcile_one(db, answer=answer)
             summary[outcome] += 1
 
-        return ReconciliationSummary(checked=len(stuck_answers), **summary)
+        for answer in stuck_submitted:
+            self._ai_job_service.dispatch_job(db, answer=answer)
+
+        return ReconciliationSummary(
+            checked=len(stuck_processing) + len(stuck_submitted),
+            redispatched=len(stuck_submitted),
+            **summary,
+        )
 
     def _reconcile_one(self, db: Session, *, answer: Answer) -> str:
         try:
