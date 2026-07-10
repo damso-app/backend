@@ -17,6 +17,7 @@ from app.schemas.families import (
 )
 from app.services.family_service import (
     AlreadyInFamilyError,
+    FamilyCreatorRoleError,
     FamilyService,
     InviteCodeNotFoundError,
     OwnFamilyInviteError,
@@ -48,6 +49,8 @@ def create_family(
         raise _bad_request("Required agreements are incomplete") from exc
     except RoleRequiredError as exc:
         raise _bad_request("User role is required") from exc
+    except FamilyCreatorRoleError as exc:
+        raise _bad_request("Only child users can create a family") from exc
     except AlreadyInFamilyError as exc:
         raise _conflict("User already belongs to a family") from exc
 

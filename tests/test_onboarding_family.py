@@ -312,6 +312,35 @@ def test_create_family_without_role_fails(
     assert response.json() == {"detail": "User role is required"}
 
 
+@pytest.mark.parametrize("role", [UserRole.MOTHER, UserRole.FATHER])
+def test_parent_role_cannot_create_family(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+    role: UserRole,
+) -> None:
+    _, public_id = create_user(
+        session_factory,
+        public_id=f"{role.value}_creator_blocked",
+        role=role,
+        agreements_completed=True,
+    )
+
+    response = client.post(
+        "/api/v1/families",
+        headers=auth_headers(public_id, auth_settings),
+        json={"familyName": "새 가족"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Only child users can create a family"}
+    with session_factory() as db:
+        family_count = db.scalar(select(func.count(Family.id)))
+        member_count = db.scalar(select(func.count(FamilyMember.id)))
+        assert family_count == 0
+        assert member_count == 0
+
+
 def test_create_family_fails_when_user_already_has_family(
     client: TestClient,
     session_factory: sessionmaker[Session],

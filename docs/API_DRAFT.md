@@ -319,6 +319,7 @@ Authorization: Bearer <Damso access token>
 - 사용자는 MVP 기준 하나의 활성 가족에만 속할 수 있다.
 - 필수 동의가 완료되지 않은 사용자의 가족 생성, 초대정보 조회, 초대코드 검증, 가족 참여는 `400`을 반환한다.
 - 역할 선택 전 가족 생성 또는 가족 참여는 `400`을 반환한다.
+- 가족 생성은 `child` 역할 사용자만 가능하다. `mother`, `father` 역할 사용자는 초대코드로 가족에 참여해야 하며 가족 생성 시 `400`을 반환한다.
 - 이미 가족에 속한 사용자가 가족을 생성하거나 join하면 `409`를 반환한다.
 - 본인이 만든 가족의 초대코드로 join하려고 하면 `409`를 반환한다.
 - 가족 생성자와 초대코드 참여자는 온보딩에서 선택한 `users.role`과 같은 값으로 `family_members.member_role`에 저장한다.
@@ -346,7 +347,7 @@ Authorization: Bearer <Damso access token>
 }
 ```
 
-`familyName`은 optional이다. 없으면 Kakao display name이 있는 경우 `{displayName}의 가족`, 없으면 `나의 가족`으로 생성한다.
+`familyName`은 optional이다. 없으면 Kakao display name이 있는 경우 `{displayName}의 가족`, 없으면 `나의 가족`으로 생성한다. MVP에서 가족 생성은 `child` 역할 사용자만 가능하다.
 
 응답:
 
@@ -357,6 +358,15 @@ Authorization: Bearer <Damso access token>
   "inviteCode": "A7K-28Q",
   "inviteUrl": "https://frontend-url/invite?code=A7K-28Q",
   "memberRole": "child"
+}
+```
+
+에러:
+
+```json
+// 400
+{
+  "detail": "Only child users can create a family"
 }
 ```
 

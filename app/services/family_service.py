@@ -43,6 +43,10 @@ class RoleRequiredError(FamilyServiceError):
     pass
 
 
+class FamilyCreatorRoleError(FamilyServiceError):
+    pass
+
+
 @dataclass(frozen=True)
 class FamilyInvitation:
     family_id: int
@@ -94,6 +98,8 @@ class FamilyService:
         family_name: str | None,
     ) -> FamilyCreateResult:
         self._ensure_ready_for_family_flow(db, user=user)
+        if user.role != UserRole.CHILD:
+            raise FamilyCreatorRoleError("Only child users can create a family")
         if self._active_membership(db, user_id=user.id) is not None:
             raise AlreadyInFamilyError("User already belongs to a family")
 
