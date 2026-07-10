@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -111,7 +112,15 @@ class AnswerService:
         question_send.answered_at = now
         question_send.status = QuestionSendStatus.ANSWERED
 
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            # Two near-simultaneous submissions for the same question_send can
+            # both pass the check in _require_answerable_question_send above;
+            # the unique index (ux_answers_question_send_id) is the real guard.
+            db.rollback()
+            raise AlreadyAnsweredError("This question has already been answered") from exc
+
         db.refresh(answer)
         return answer
 
