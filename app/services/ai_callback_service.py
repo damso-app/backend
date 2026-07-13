@@ -72,9 +72,18 @@ class AiCallbackService:
         if answer is None:
             raise AnswerNotFoundError("Answer was not found")
 
-        if payload.answer_id != str(answer_id):
+        if str(payload.answer_id) != str(answer_id):
             raise AnswerIdMismatchError("answerId in the request body does not match the path")
 
+        return self.apply_result(db, answer=answer, payload=payload)
+
+    def apply_result(self, db: Session, *, answer: Answer, payload: AiCallbackRequest) -> Answer:
+        """Apply an AI pipeline result to an answer.
+
+        Shared by the inbound callback route and the stuck-answer reconciliation
+        poll, so both paths get the same idempotency guard and completion/failure
+        handling regardless of how the result arrived.
+        """
         if answer.status in (AnswerStatus.COMPLETED, AnswerStatus.FAILED):
             return answer
 
@@ -90,6 +99,22 @@ class AiCallbackService:
                 f"Unexpected {_AI_STEP_STATUS}.status: {pipeline_status!r}"
             )
 
+        return answer
+
+    def mark_lost(self, db: Session, *, answer: Answer) -> Answer:
+        """Fail an answer whose AI job can no longer be found (e.g. expired on
+        the AI server before its callback ever arrived)."""
+        if answer.status in (AnswerStatus.COMPLETED, AnswerStatus.FAILED):
+            return answer
+
+        answer.status = AnswerStatus.FAILED
+        answer.ai_retryable = True
+        db.commit()
+
+        self._realtime_service.broadcast_answer_failed(
+            family_id=answer.family_id,
+            answer_id=answer.id,
+        )
         return answer
 
     def _complete(self, db: Session, *, answer: Answer, payload: AiCallbackRequest) -> None:

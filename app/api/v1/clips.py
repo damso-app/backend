@@ -13,7 +13,12 @@ from app.services.clip_service import ActiveFamilyRequiredError, ClipService
 router = APIRouter(prefix="/clips", tags=["clips"])
 
 
-@router.get("", response_model=ClipGridResponse)
+@router.get(
+    "",
+    response_model=ClipGridResponse,
+    summary="클립 그리드 조회",
+    description="가족의 답변들을 날짜별로 그룹화한 '네컷 그리드'를 조회합니다.",
+)
 def get_clip_grid(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
@@ -36,6 +41,8 @@ def get_clip_grid(
                         answerId=answer.id,
                         status=answer.status,
                         thumbnailUrl=service.resolve_thumbnail_url(answer),
+                        answererRole=answer.user.role,
+                        answererName=answer.user.display_name,
                     )
                     for answer in answers
                 ],

@@ -1,3 +1,4 @@
+import secrets
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
@@ -64,3 +65,25 @@ def get_current_user(
         )
 
     return user
+
+
+def require_internal_trigger(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    """Gate internal, scheduler-triggered endpoints behind a static shared
+    secret. Stand-in for OIDC verification of the Cloud Scheduler service
+    account once deployed to Cloud Run."""
+    if settings.internal_trigger_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="INTERNAL_TRIGGER_TOKEN is not configured",
+        )
+    if credentials is None or not secrets.compare_digest(
+        credentials.credentials, settings.internal_trigger_token.get_secret_value()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid trigger token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )

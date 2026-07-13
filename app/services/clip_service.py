@@ -2,7 +2,7 @@ from collections import defaultdict
 from datetime import date
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.timezone import to_kst_date
 from app.models.answer import Answer
@@ -39,6 +39,7 @@ class ClipService:
         answers = list(
             db.scalars(
                 select(Answer)
+                .options(selectinload(Answer.user))
                 .where(
                     Answer.family_id == membership.family_id,
                     Answer.deleted_at.is_(None),
@@ -60,10 +61,26 @@ class ClipService:
         user: User,
         answer_id: int,
     ) -> tuple[Answer, VideoClip]:
+        answer = self.get_answer_for_family(db, user=user, answer_id=answer_id)
+
+        video_clip = db.scalar(select(VideoClip).where(VideoClip.answer_id == answer_id).limit(1))
+        if video_clip is None:
+            raise ClipNotReadyError("Clip is not ready yet")
+
+        return answer, video_clip
+
+    def get_answer_for_family(
+        self,
+        db: Session,
+        *,
+        user: User,
+        answer_id: int,
+    ) -> Answer:
         membership = self._require_active_membership(db, user_id=user.id)
 
         answer = db.scalar(
             select(Answer)
+            .options(selectinload(Answer.user))
             .where(
                 Answer.id == answer_id,
                 Answer.family_id == membership.family_id,
@@ -74,11 +91,7 @@ class ClipService:
         if answer is None:
             raise AnswerNotFoundError("Answer was not found")
 
-        video_clip = db.scalar(select(VideoClip).where(VideoClip.answer_id == answer_id).limit(1))
-        if video_clip is None:
-            raise ClipNotReadyError("Clip is not ready yet")
-
-        return answer, video_clip
+        return answer
 
     def resolve_thumbnail_url(self, answer: Answer) -> str | None:
         if answer.thumbnail_url is None:

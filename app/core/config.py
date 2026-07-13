@@ -39,11 +39,14 @@ class Settings(BaseSettings):
     gcs_signer_service_account: str | None = None
     app_base_url: str | None = None
     ai_server_base_url: str | None = None
+    ai_server_api_key: SecretStr | None = None
     ai_job_request_timeout_seconds: float = 5.0
     ai_edited_video_upload_url_expire_minutes: int = 120
     ai_callback_token_expire_minutes: int = 120
     enable_demo_mode: bool = False
     demo_user_id: int | None = None
+    ai_stuck_processing_threshold_minutes: int = 20
+    internal_trigger_token: SecretStr | None = None
 
     @field_validator("cors_origins", mode="before")
     @classmethod

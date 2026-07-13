@@ -1,6 +1,8 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from unittest import mock
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -38,6 +40,8 @@ def auth_settings() -> Settings:
         jwt_algorithm="HS256",
         access_token_expire_minutes=15,
         login_code_expire_minutes=5,
+        ai_server_base_url="https://ai-server.example.com",
+        ai_job_request_timeout_seconds=5.0,
     )
 
 
@@ -136,6 +140,8 @@ def create_answer(
     status: AnswerStatus = AnswerStatus.COMPLETED,
     created_at: datetime | None = None,
     thumbnail_url: str | None = None,
+    ai_job_id: str | None = None,
+    video_duration_seconds: int | None = None,
 ) -> int:
     with session_factory() as db:
         question_send = QuestionSend(
@@ -156,6 +162,8 @@ def create_answer(
             family_id=family_id,
             status=status,
             thumbnail_url=thumbnail_url,
+            ai_job_id=ai_job_id,
+            video_duration_seconds=video_duration_seconds,
             submitted_at=created_at or datetime.now(UTC),
             created_at=created_at or datetime.now(UTC),
         )
@@ -194,6 +202,8 @@ def test_grid_groups_by_kst_date_and_includes_thumbnail(
                     "answerId": answer_id,
                     "status": "completed",
                     "thumbnailUrl": "signed:gs://damso-videos/thumb.jpg",
+                    "answererRole": "mother",
+                    "answererName": "mother_public_id",
                 }
             ],
         }
@@ -271,6 +281,7 @@ def test_clip_detail_returns_signed_urls(
         family_id=int(ids["family_id"]),
         user_id=int(ids["mother_id"]),
         thumbnail_url="gs://damso-videos/thumb.jpg",
+        video_duration_seconds=42,
     )
     with session_factory() as db:
         db.add(
@@ -292,10 +303,14 @@ def test_clip_detail_returns_signed_urls(
     assert response.status_code == 200
     body = response.json()
     assert body["answerId"] == answer_id
+    assert body["questionText"] == "질문"
     assert body["videoUrl"] == "signed:gs://damso-videos/edited.mp4"
+    assert body["videoDurationSeconds"] == 42
     assert body["thumbnailUrl"] == "signed:gs://damso-videos/thumb.jpg"
     assert body["title"] == "제목"
     assert body["quote"] == "명대사"
+    assert body["answererRole"] == "mother"
+    assert body["answererName"] == "mother_public_id"
 
 
 def test_clip_detail_not_ready_returns_404(
@@ -357,6 +372,244 @@ def test_clip_detail_rejects_other_family(
 
     response = client.get(
         f"/api/v1/answers/{answer_id}/clip",
+        headers=auth_headers(other_child_public_id, auth_settings),
+    )
+
+    assert response.status_code == 404
+
+
+def test_progress_returns_immediately_for_non_processing_answer(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    answer_id = create_answer(
+        session_factory,
+        family_id=int(ids["family_id"]),
+        user_id=int(ids["mother_id"]),
+        status=AnswerStatus.COMPLETED,
+        ai_job_id="JOB_1",
+    )
+
+    with mock.patch("httpx.get") as mock_get:
+        response = client.get(
+            f"/api/v1/answers/{answer_id}/progress",
+            headers=auth_headers(str(ids["mother_public_id"]), auth_settings),
+        )
+        mock_get.assert_not_called()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "answerId": answer_id,
+        "status": "completed",
+        "progress": None,
+        "currentStepLabel": None,
+        "estimatedRemainingSeconds": None,
+        "aiJobStatus": None,
+    }
+
+
+def test_progress_returns_status_only_when_ai_job_id_missing(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    answer_id = create_answer(
+        session_factory,
+        family_id=int(ids["family_id"]),
+        user_id=int(ids["mother_id"]),
+        status=AnswerStatus.PROCESSING,
+        ai_job_id=None,
+    )
+
+    with mock.patch("httpx.get") as mock_get:
+        response = client.get(
+            f"/api/v1/answers/{answer_id}/progress",
+            headers=auth_headers(str(ids["mother_public_id"]), auth_settings),
+        )
+        mock_get.assert_not_called()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "processing"
+    assert body["progress"] is None
+
+
+def test_progress_polls_ai_server_when_processing(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    answer_id = create_answer(
+        session_factory,
+        family_id=int(ids["family_id"]),
+        user_id=int(ids["mother_id"]),
+        status=AnswerStatus.PROCESSING,
+        ai_job_id="JOB_42",
+    )
+
+    with mock.patch("httpx.get") as mock_get:
+        mock_get.return_value = httpx.Response(
+            200,
+            json={
+                "jobId": "JOB_42",
+                "status": "processing",
+                "progress": 35,
+                "currentStepLabel": "AI-002 STT 처리 중",
+                "estimatedRemainingSeconds": 21.57,
+                "hasResult": False,
+            },
+            request=httpx.Request("GET", "https://ai-server.example.com/api/v1/ai/jobs/JOB_42"),
+        )
+        response = client.get(
+            f"/api/v1/answers/{answer_id}/progress",
+            headers=auth_headers(str(ids["mother_public_id"]), auth_settings),
+        )
+        called_url = mock_get.call_args[0][0]
+        assert called_url.endswith("/api/v1/ai/jobs/JOB_42")
+        assert mock_get.call_args.kwargs["params"] == {"includeResult": "false"}
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answerId"] == answer_id
+    assert body["status"] == "processing"
+    assert body["progress"] == 35
+    assert body["currentStepLabel"] == "AI-002 STT 처리 중"
+    assert body["estimatedRemainingSeconds"] == 21.57
+    assert body["aiJobStatus"] == "processing"
+
+
+def test_progress_reports_ai_job_status_completed_before_callback_arrives(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    """The AI server can finish (and even report status=completed on its own
+    job-status poll) before its callback actually reaches us. status here
+    stays "processing" (our own DB truth, only the callback flips it), but
+    aiJobStatus must surface the AI server's completed state distinctly so
+    the frontend can show a "finishing up" state instead of a generic one."""
+    ids = create_family_with_members(session_factory)
+    answer_id = create_answer(
+        session_factory,
+        family_id=int(ids["family_id"]),
+        user_id=int(ids["mother_id"]),
+        status=AnswerStatus.PROCESSING,
+        ai_job_id="JOB_42",
+    )
+
+    with mock.patch("httpx.get") as mock_get:
+        mock_get.return_value = httpx.Response(
+            200,
+            json={
+                "jobId": "JOB_42",
+                "status": "completed",
+                "progress": 100,
+                "currentStepLabel": "AI-009 네컷 생성 완료",
+                "estimatedRemainingSeconds": 0,
+                "hasResult": True,
+                "resultOmitted": True,
+                "resultDelivery": "callback",
+            },
+            request=httpx.Request("GET", "https://ai-server.example.com/api/v1/ai/jobs/JOB_42"),
+        )
+        response = client.get(
+            f"/api/v1/answers/{answer_id}/progress",
+            headers=auth_headers(str(ids["mother_public_id"]), auth_settings),
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "processing"
+    assert body["aiJobStatus"] == "completed"
+
+
+def test_progress_falls_back_when_ai_poll_fails(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    answer_id = create_answer(
+        session_factory,
+        family_id=int(ids["family_id"]),
+        user_id=int(ids["mother_id"]),
+        status=AnswerStatus.PROCESSING,
+        ai_job_id="JOB_42",
+    )
+
+    with mock.patch("httpx.get") as mock_get:
+        mock_get.side_effect = httpx.ConnectError("AI server unreachable")
+        response = client.get(
+            f"/api/v1/answers/{answer_id}/progress",
+            headers=auth_headers(str(ids["mother_public_id"]), auth_settings),
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "processing"
+    assert body["progress"] is None
+
+
+def test_progress_requires_active_family(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    with session_factory() as db:
+        outsider = create_user(db, public_id="outsider_public_id", role=UserRole.CHILD)
+        db.commit()
+        outsider_public_id = outsider.public_id
+
+    response = client.get(
+        "/api/v1/answers/1/progress",
+        headers=auth_headers(outsider_public_id, auth_settings),
+    )
+
+    assert response.status_code == 400
+
+
+def test_progress_rejects_other_family_answer(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    answer_id = create_answer(
+        session_factory,
+        family_id=int(ids["family_id"]),
+        user_id=int(ids["mother_id"]),
+        status=AnswerStatus.PROCESSING,
+        ai_job_id="JOB_1",
+    )
+
+    with session_factory() as db:
+        other_child = create_user(db, public_id="other_child_2", role=UserRole.CHILD)
+        other_family = Family(
+            public_id="other_family_2",
+            name="다른 가족",
+            created_by_user_id=other_child.id,
+            status=FamilyStatus.ACTIVE,
+        )
+        db.add(other_family)
+        db.flush()
+        db.add(
+            FamilyMember(
+                family_id=other_family.id,
+                user_id=other_child.id,
+                member_role=FamilyMemberRole.CHILD,
+                status=FamilyMemberStatus.ACTIVE,
+            )
+        )
+        db.commit()
+        other_child_public_id = other_child.public_id
+
+    response = client.get(
+        f"/api/v1/answers/{answer_id}/progress",
         headers=auth_headers(other_child_public_id, auth_settings),
     )
 

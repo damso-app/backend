@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from functools import lru_cache
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -29,9 +30,17 @@ def create_session_factory(settings: Settings | None = None) -> sessionmaker[Ses
     )
 
 
+@lru_cache
+def _default_session_factory() -> sessionmaker[Session]:
+    """Process-wide singleton engine/session factory for the production get_db()
+    path. Without this, get_db() opened a brand-new engine (and connection pool)
+    per request and never disposed it, exhausting Supabase's connection limit
+    under sustained traffic (e.g. 2s-interval AI progress polling)."""
+    return create_session_factory()
+
+
 def get_db() -> Generator[Session, None, None]:
-    session_factory = create_session_factory()
-    db = session_factory()
+    db = _default_session_factory()()
     try:
         yield db
     finally:

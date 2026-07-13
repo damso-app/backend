@@ -1,11 +1,12 @@
 import logging
 
 import httpx
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.core.security import AccessTokenError, create_ai_callback_token
-from app.models.answer import Answer
+from app.models.answer import Answer, AnswerStatus
 from app.services.storage_service import StorageService, StorageServiceError
 from app.services.video_paths import edited_video_object_path
 
@@ -45,11 +46,53 @@ class AiJobService:
             response = httpx.post(
                 f"{self._settings.ai_server_base_url}{_AI_JOBS_PATH}",
                 json=payload,
+                headers=self._request_headers(),
                 timeout=self._settings.ai_job_request_timeout_seconds,
             )
             response.raise_for_status()
         except (httpx.HTTPError, StorageServiceError, AccessTokenError):
             logger.exception("Failed to dispatch AI job for answer_id=%s", answer.id)
+            return
+
+        # A fast job may already have completed and delivered its callback by the
+        # time this call returns, so only advance from submitted (never clobber a
+        # concurrently-set completed/failed status).
+        db.execute(
+            update(Answer)
+            .where(Answer.id == answer.id, Answer.status == AnswerStatus.SUBMITTED)
+            .values(status=AnswerStatus.PROCESSING)
+        )
+        db.commit()
+
+    def get_job_progress(self, *, ai_job_id: str) -> dict[str, object] | None:
+        """Poll the AI server for a job's live progress (no result body).
+
+        Returns None if polling isn't possible or fails, so the caller can
+        fall back to the answer's own status without surfacing an error.
+        """
+        if not self._settings.ai_server_base_url:
+            return None
+
+        try:
+            response = httpx.get(
+                f"{self._settings.ai_server_base_url}{_AI_JOBS_PATH}/{ai_job_id}",
+                params={"includeResult": "false"},
+                headers=self._request_headers(),
+                timeout=self._settings.ai_job_request_timeout_seconds,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            logger.exception("Failed to poll AI job progress for ai_job_id=%s", ai_job_id)
+            return None
+
+        return response.json()
+
+    def _request_headers(self) -> dict[str, str]:
+        if self._settings.ai_server_api_key is None:
+            return {}
+        return {
+            "Authorization": f"Bearer {self._settings.ai_server_api_key.get_secret_value()}"
+        }
 
     def _build_payload(self, answer: Answer) -> dict[str, object]:
         object_path = edited_video_object_path(
