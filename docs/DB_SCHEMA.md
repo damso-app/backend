@@ -243,15 +243,16 @@ MVP에서는 가족방 내부 권한 판단에 `family_members.member_role`을 s
 
 목적: 질문 탭에서 depth 기준으로 랜덤 노출할 추천 질문 seed를 저장한다.
 
-| Column        | Type                           | PK  | FK  | Unique | Nullable | Notes                    |
-| ------------- | ------------------------------ | --- | --- | ------ | -------- | ------------------------ |
-| id            | BIGINT                         | Y   | N   | Y      | N        | 내부 PK                  |
-| question_text | TEXT                           | N   | N   | N      | N        | 추천 질문 본문           |
-| depth         | question_depth                 | N   | N   | N      | N        | `tiny`, `medium`, `deep` |
-| category      | VARCHAR(80)                    | N   | N   | N      | Y        | 질문 카테고리            |
-| status        | question_recommendation_status | N   | N   | N      | N        | `active`, `archived`     |
-| created_at    | TIMESTAMPTZ                    | N   | N   | N      | N        | 생성 시각                |
-| updated_at    | TIMESTAMPTZ                    | N   | N   | N      | N        | 수정 시각                |
+| Column        | Type                           | PK  | FK  | Unique | Nullable | Notes                                      |
+| ------------- | ------------------------------ | --- | --- | ------ | -------- | ------------------------------------------ |
+| id            | BIGINT                         | Y   | N   | Y      | N        | 내부 PK                                    |
+| question_text | TEXT                           | N   | N   | N      | N        | 추천 질문 본문                             |
+| depth         | question_depth                 | N   | N   | N      | N        | `tiny`, `medium`, `deep`                   |
+| category      | VARCHAR(80)                    | N   | N   | N      | Y        | 질문 카테고리                              |
+| target_role   | user_role                      | N   | N   | N      | Y        | `mother`, `father`; null이면 공통 추천 질문 |
+| status        | question_recommendation_status | N   | N   | N      | N        | `active`, `archived`                       |
+| created_at    | TIMESTAMPTZ                    | N   | N   | N      | N        | 생성 시각                                  |
+| updated_at    | TIMESTAMPTZ                    | N   | N   | N      | N        | 수정 시각                                  |
 
 인덱스 후보:
 

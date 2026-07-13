@@ -31,7 +31,11 @@ def get_current_user(
             )
 
         demo_user = db.get(User, settings.demo_user_id)
-        if demo_user is None or demo_user.status != UserStatus.ACTIVE or demo_user.deleted_at is not None:
+        if (
+            demo_user is None
+            or demo_user.status != UserStatus.ACTIVE
+            or demo_user.deleted_at is not None
+        ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Demo user is unavailable",

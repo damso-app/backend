@@ -22,6 +22,8 @@ from app.services.question_loop_service import (
     InvalidQuestionPayloadError,
     InvalidRecipientError,
     QuestionLoopService,
+    RecipientForbiddenError,
+    RecipientUserNotFoundError,
     RecommendationNotFoundError,
 )
 
@@ -53,11 +55,28 @@ def list_question_recommendations(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
     service: Annotated[QuestionLoopService, Depends(get_question_loop_service)],
-    depth: Annotated[QuestionDepth, Query()],
+    recipient_user_id: Annotated[int, Query(alias="recipient_user_id")],
+    depth: Annotated[QuestionDepth | None, Query()] = None,
+    category: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=20)] = 3,
 ) -> QuestionRecommendationsResponse:
-    _ = current_user
-    recommendations = service.list_recommendations(db, depth=depth, limit=limit)
+    try:
+        recommendations = service.list_recommendations(
+            db,
+            user=current_user,
+            recipient_user_id=recipient_user_id,
+            depth=depth,
+            category=category,
+            limit=limit,
+        )
+    except ActiveFamilyRequiredError as exc:
+        raise _bad_request("Active family is required") from exc
+    except RecipientUserNotFoundError as exc:
+        raise _not_found("Recipient user was not found") from exc
+    except RecipientForbiddenError as exc:
+        raise _forbidden("Recipient is not in the same family") from exc
+    except InvalidRecipientError as exc:
+        raise _bad_request(str(exc)) from exc
     return QuestionRecommendationsResponse(
         recommendations=[_recommendation_item(item) for item in recommendations],
     )
@@ -107,6 +126,7 @@ def _recommendation_item(item: QuestionRecommendation) -> QuestionRecommendation
         questionText=item.question_text,
         depth=item.depth,
         category=item.category,
+        targetRole=item.target_role,
     )
 
 
@@ -136,3 +156,7 @@ def _bad_request(detail: str) -> HTTPException:
 
 def _not_found(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+
+def _forbidden(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)

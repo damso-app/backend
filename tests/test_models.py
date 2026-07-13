@@ -129,6 +129,7 @@ def test_question_recommendations_model_matches_db_schema() -> None:
     assert question_recommendations.c.depth.nullable is False
     assert question_recommendations.c.category.type.length == 80
     assert question_recommendations.c.category.nullable is True
+    assert question_recommendations.c.target_role.nullable is True
     assert question_recommendations.c.status.nullable is False
 
     indexes = {index.name for index in question_recommendations.indexes}

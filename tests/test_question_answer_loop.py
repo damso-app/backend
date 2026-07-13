@@ -234,7 +234,7 @@ def test_question_recommendations_are_filtered_by_depth(
         db.commit()
 
     response = client.get(
-        "/api/v1/questions/recommendations?depth=tiny&limit=10",
+        f"/api/v1/questions/recommendations?recipient_user_id={ids['mother_id']}&depth=tiny&limit=10",
         headers=auth_headers(str(ids["child_public_id"]), auth_settings),
     )
 
@@ -243,6 +243,225 @@ def test_question_recommendations_are_filtered_by_depth(
     assert [item["depth"] for item in body["recommendations"]] == ["tiny"]
     assert [item["questionText"] for item in body["recommendations"]] == [
         "가볍게 웃었던 일은 무엇인가요?"
+    ]
+    assert body["recommendations"][0]["targetRole"] is None
+
+
+def test_question_recommendations_are_filtered_by_recipient_role(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    with session_factory() as db:
+        db.add_all(
+            [
+                QuestionRecommendation(
+                    question_text="엄마 전용 질문",
+                    depth=QuestionDepth.TINY,
+                    category="일상",
+                    target_role=UserRole.MOTHER,
+                    status=QuestionRecommendationStatus.ACTIVE,
+                ),
+                QuestionRecommendation(
+                    question_text="아빠 전용 질문",
+                    depth=QuestionDepth.TINY,
+                    category="일상",
+                    target_role=UserRole.FATHER,
+                    status=QuestionRecommendationStatus.ACTIVE,
+                ),
+                QuestionRecommendation(
+                    question_text="공통 질문",
+                    depth=QuestionDepth.TINY,
+                    category="일상",
+                    target_role=None,
+                    status=QuestionRecommendationStatus.ACTIVE,
+                ),
+            ]
+        )
+        db.commit()
+
+    mother_response = client.get(
+        (
+            "/api/v1/questions/recommendations"
+            f"?recipient_user_id={ids['mother_id']}&depth=tiny&limit=10"
+        ),
+        headers=auth_headers(str(ids["child_public_id"]), auth_settings),
+    )
+    father_response = client.get(
+        (
+            "/api/v1/questions/recommendations"
+            f"?recipient_user_id={ids['father_id']}&depth=tiny&limit=10"
+        ),
+        headers=auth_headers(str(ids["child_public_id"]), auth_settings),
+    )
+
+    assert mother_response.status_code == 200
+    mother_questions = {
+        item["questionText"] for item in mother_response.json()["recommendations"]
+    }
+    assert mother_questions == {"엄마 전용 질문", "공통 질문"}
+    assert "아빠 전용 질문" not in mother_questions
+
+    assert father_response.status_code == 200
+    father_questions = {
+        item["questionText"] for item in father_response.json()["recommendations"]
+    }
+    assert father_questions == {"아빠 전용 질문", "공통 질문"}
+    assert "엄마 전용 질문" not in father_questions
+
+
+def test_question_recommendations_apply_category_and_depth_filters(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    with session_factory() as db:
+        db.add_all(
+            [
+                QuestionRecommendation(
+                    question_text="일상 tiny",
+                    depth=QuestionDepth.TINY,
+                    category="일상",
+                    target_role=UserRole.MOTHER,
+                    status=QuestionRecommendationStatus.ACTIVE,
+                ),
+                QuestionRecommendation(
+                    question_text="추억 tiny",
+                    depth=QuestionDepth.TINY,
+                    category="추억",
+                    target_role=UserRole.MOTHER,
+                    status=QuestionRecommendationStatus.ACTIVE,
+                ),
+                QuestionRecommendation(
+                    question_text="일상 deep",
+                    depth=QuestionDepth.DEEP,
+                    category="일상",
+                    target_role=UserRole.MOTHER,
+                    status=QuestionRecommendationStatus.ACTIVE,
+                ),
+            ]
+        )
+        db.commit()
+
+    response = client.get(
+        (
+            "/api/v1/questions/recommendations"
+            f"?recipient_user_id={ids['mother_id']}&depth=tiny&category=일상&limit=10"
+        ),
+        headers=auth_headers(str(ids["child_public_id"]), auth_settings),
+    )
+
+    assert response.status_code == 200
+    assert [item["questionText"] for item in response.json()["recommendations"]] == [
+        "일상 tiny"
+    ]
+
+
+def test_question_recommendations_reject_invalid_recipients(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    with session_factory() as db:
+        outsider = create_user(
+            db,
+            public_id="other_family_mother",
+            display_name="다른 가족 엄마",
+            role=UserRole.MOTHER,
+        )
+        other_family = Family(
+            public_id="other_family",
+            name="다른 가족",
+            invite_code="XYZ789",
+            created_by_user_id=outsider.id,
+            status=FamilyStatus.ACTIVE,
+        )
+        db.add(other_family)
+        db.flush()
+        db.add(
+            FamilyMember(
+                family_id=other_family.id,
+                user_id=outsider.id,
+                member_role=FamilyMemberRole.MOTHER,
+                status=FamilyMemberStatus.ACTIVE,
+            )
+        )
+        inactive_parent = create_user(
+            db,
+            public_id="inactive_parent",
+            display_name="비활성 부모",
+            role=UserRole.MOTHER,
+        )
+        db.flush()
+        db.add(
+            FamilyMember(
+                family_id=int(ids["family_id"]),
+                user_id=inactive_parent.id,
+                member_role=FamilyMemberRole.MOTHER,
+                status=FamilyMemberStatus.LEFT,
+            )
+        )
+        db.commit()
+        outsider_id = outsider.id
+        inactive_parent_id = inactive_parent.id
+
+    base_url = "/api/v1/questions/recommendations"
+    headers = auth_headers(str(ids["child_public_id"]), auth_settings)
+    missing_response = client.get(f"{base_url}?recipient_user_id=999999", headers=headers)
+    other_family_response = client.get(
+        f"{base_url}?recipient_user_id={outsider_id}",
+        headers=headers,
+    )
+    child_response = client.get(f"{base_url}?recipient_user_id={ids['child_id']}", headers=headers)
+    inactive_response = client.get(
+        f"{base_url}?recipient_user_id={inactive_parent_id}",
+        headers=headers,
+    )
+
+    assert missing_response.status_code == 404
+    assert other_family_response.status_code == 403
+    assert child_response.status_code == 400
+    assert inactive_response.status_code == 400
+
+
+def test_demo_mode_question_recommendations_use_demo_child_family(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    auth_settings.enable_demo_mode = True
+    auth_settings.demo_user_id = int(ids["child_id"])
+    with session_factory() as db:
+        db.add_all(
+            [
+                QuestionRecommendation(
+                    question_text="데모 엄마 질문",
+                    depth=QuestionDepth.TINY,
+                    target_role=UserRole.MOTHER,
+                    status=QuestionRecommendationStatus.ACTIVE,
+                ),
+                QuestionRecommendation(
+                    question_text="데모 아빠 질문",
+                    depth=QuestionDepth.TINY,
+                    target_role=UserRole.FATHER,
+                    status=QuestionRecommendationStatus.ACTIVE,
+                ),
+            ]
+        )
+        db.commit()
+
+    response = client.get(
+        f"/api/v1/questions/recommendations?recipient_user_id={ids['mother_id']}&limit=10",
+        headers={"X-Demo-Mode": "true"},
+    )
+
+    assert response.status_code == 200
+    assert [item["questionText"] for item in response.json()["recommendations"]] == [
+        "데모 엄마 질문"
     ]
 
 
@@ -288,6 +507,36 @@ def test_send_question_appears_in_recipient_answers_and_does_not_block_sending(
         },
     )
     assert mother_send_response.status_code == 200
+
+
+def test_send_recommended_question_must_match_recipient_role(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    with session_factory() as db:
+        recommendation = QuestionRecommendation(
+            question_text="아빠에게만 보낼 추천 질문",
+            depth=QuestionDepth.TINY,
+            target_role=UserRole.FATHER,
+            status=QuestionRecommendationStatus.ACTIVE,
+        )
+        db.add(recommendation)
+        db.commit()
+        recommendation_id = recommendation.id
+
+    response = client.post(
+        "/api/v1/questions",
+        headers=auth_headers(str(ids["child_public_id"]), auth_settings),
+        json={
+            "recipientUserId": ids["mother_id"],
+            "recommendationId": recommendation_id,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Recommendation is not available for this recipient"}
 
 
 def test_received_question_detail_and_read_are_recipient_only(

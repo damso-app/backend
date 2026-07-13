@@ -5,6 +5,7 @@ from sqlalchemy import BigInteger, DateTime, Enum, Index, Integer, String, Text,
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
+from app.models.user import UserRole
 
 BIGINT_ID = BigInteger().with_variant(Integer, "sqlite")
 
@@ -37,6 +38,14 @@ class QuestionRecommendation(Base):
         nullable=False,
     )
     category: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    target_role: Mapped[UserRole | None] = mapped_column(
+        Enum(
+            UserRole,
+            name="user_role",
+            values_callable=lambda enum_class: [item.value for item in enum_class],
+        ),
+        nullable=True,
+    )
     status: Mapped[QuestionRecommendationStatus] = mapped_column(
         Enum(
             QuestionRecommendationStatus,
