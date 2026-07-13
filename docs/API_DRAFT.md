@@ -711,13 +711,14 @@ Query parameters:
       "readAt": null,
       "answered": false,
       "answeredAt": null,
-      "status": "sent"
+      "status": "sent",
+      "answerId": null
     }
   ]
 }
 ```
 
-이미 답변한 질문도 기본 목록에 포함된다.
+이미 답변한 질문도 기본 목록에 포함된다. `answerId`는 답변이 아직 없으면 `null`이고, 답변이 등록되면 해당 `answers.id`가 들어간다 — 프론트에서 `GET /api/v1/answers/{answer_id}/clip`으로 바로 이동할 때 쓰는 연결 키다.
 
 ### `GET /api/v1/answers/questions/{question_send_id}`
 
@@ -742,6 +743,7 @@ Query parameters:
   "answered": false,
   "answeredAt": null,
   "status": "sent",
+  "answerId": null,
   "source": "custom",
   "recommendationId": null
 }

@@ -108,6 +108,6 @@ class Answer(Base):
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    question_send: Mapped["QuestionSend"] = relationship()
+    question_send: Mapped["QuestionSend"] = relationship(back_populates="answer")
     user: Mapped["User"] = relationship()
     family: Mapped["Family"] = relationship()

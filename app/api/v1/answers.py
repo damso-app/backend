@@ -434,6 +434,7 @@ def _received_question_item(question: QuestionSend) -> ReceivedQuestionItem:
         answered=_is_answered(question),
         answeredAt=question.answered_at,
         status=question.status,
+        answerId=question.answer.id if question.answer is not None else None,
     )
 
 

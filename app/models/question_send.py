@@ -9,6 +9,7 @@ from app.db.session import Base
 from app.models.question_recommendation import QuestionDepth
 
 if TYPE_CHECKING:
+    from app.models.answer import Answer
     from app.models.family import Family
     from app.models.question_recommendation import QuestionRecommendation
     from app.models.user import User
@@ -108,3 +109,4 @@ class QuestionSend(Base):
     recipient: Mapped["User"] = relationship(foreign_keys=[recipient_user_id])
     family: Mapped["Family"] = relationship()
     recommendation: Mapped["QuestionRecommendation | None"] = relationship()
+    answer: Mapped["Answer | None"] = relationship(back_populates="question_send", uselist=False)
