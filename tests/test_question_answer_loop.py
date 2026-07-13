@@ -12,6 +12,7 @@ from app.core.config import Settings, get_settings
 from app.core.security import create_access_token
 from app.db.session import Base, get_db
 from app.main import app
+from app.models.answer import Answer, AnswerStatus
 from app.models.family import Family, FamilyStatus
 from app.models.family_member import FamilyMember, FamilyMemberRole, FamilyMemberStatus
 from app.models.question_recommendation import (
@@ -581,6 +582,59 @@ def test_received_question_detail_and_read_are_recipient_only(
     assert read_response.status_code == 200
     assert read_response.json()["read"] is True
     assert read_response.json()["readAt"] is not None
+
+
+def test_received_question_answer_id_links_to_answer_once_submitted(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    auth_settings: Settings,
+) -> None:
+    ids = create_family_with_members(session_factory)
+    with session_factory() as db:
+        unanswered_question = create_question_send(
+            db,
+            sender_user_id=int(ids["child_id"]),
+            recipient_user_id=int(ids["mother_id"]),
+            family_id=int(ids["family_id"]),
+        )
+        answered_question = create_question_send(
+            db,
+            sender_user_id=int(ids["child_id"]),
+            recipient_user_id=int(ids["mother_id"]),
+            family_id=int(ids["family_id"]),
+            answered_at=datetime.now(UTC),
+            status=QuestionSendStatus.ANSWERED,
+        )
+        db.flush()
+        answer = Answer(
+            question_send_id=answered_question.id,
+            user_id=int(ids["mother_id"]),
+            family_id=int(ids["family_id"]),
+            status=AnswerStatus.COMPLETED,
+        )
+        db.add(answer)
+        db.commit()
+        unanswered_question_id = unanswered_question.id
+        answered_question_id = answered_question.id
+        answer_id = answer.id
+
+    list_response = client.get(
+        "/api/v1/answers/questions",
+        headers=auth_headers(str(ids["mother_public_id"]), auth_settings),
+    )
+    assert list_response.status_code == 200
+    answer_id_by_question_send_id = {
+        item["questionSendId"]: item["answerId"] for item in list_response.json()["questions"]
+    }
+    assert answer_id_by_question_send_id[unanswered_question_id] is None
+    assert answer_id_by_question_send_id[answered_question_id] == answer_id
+
+    detail_response = client.get(
+        f"/api/v1/answers/questions/{answered_question_id}",
+        headers=auth_headers(str(ids["mother_public_id"]), auth_settings),
+    )
+    assert detail_response.status_code == 200
+    assert detail_response.json()["answerId"] == answer_id
 
 
 def test_unanswered_filter_only_returns_pending_questions(

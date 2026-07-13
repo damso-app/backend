@@ -76,6 +76,7 @@ class ReceivedQuestionItem(QuestionLoopSchema):
     answered: bool
     answered_at: datetime | None = Field(default=None, alias="answeredAt")
     status: QuestionSendStatus
+    answer_id: int | None = Field(default=None, alias="answerId")
 
 
 class ReceivedQuestionsResponse(QuestionLoopSchema):

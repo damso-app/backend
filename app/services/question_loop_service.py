@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.timezone import today_range_in_kst
@@ -254,7 +254,11 @@ class QuestionLoopService:
         unanswered_only: bool,
         sort: str,
     ) -> list[QuestionSend]:
-        statement = select(QuestionSend).where(QuestionSend.recipient_user_id == user.id)
+        statement = (
+            select(QuestionSend)
+            .options(selectinload(QuestionSend.answer))
+            .where(QuestionSend.recipient_user_id == user.id)
+        )
         if unanswered_only:
             statement = statement.where(
                 QuestionSend.answered_at.is_(None),
@@ -288,6 +292,7 @@ class QuestionLoopService:
     ) -> QuestionSend:
         question_send = db.scalar(
             select(QuestionSend)
+            .options(selectinload(QuestionSend.answer))
             .where(
                 QuestionSend.id == question_send_id,
                 QuestionSend.recipient_user_id == user.id,
