@@ -55,3 +55,13 @@ def test_cors_origins_default_to_empty_list(monkeypatch) -> None:
     settings = Settings(_env_file=None)
 
     assert settings.cors_origins == []
+
+
+def test_demo_mode_settings_load_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_DEMO_MODE", "true")
+    monkeypatch.setenv("DEMO_USER_ID", "43")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.enable_demo_mode is True
+    assert settings.demo_user_id == 43
