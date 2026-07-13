@@ -32,6 +32,7 @@ class QuestionRecommendationItem(QuestionLoopSchema):
     question_text: str = Field(alias="questionText")
     depth: QuestionDepth
     category: str | None = None
+    target_role: UserRole | None = Field(default=None, alias="targetRole")
 
 
 class QuestionRecommendationsResponse(QuestionLoopSchema):

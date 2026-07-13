@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import and_, case, func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.core.timezone import today_range_in_kst
 from app.models.family import Family, FamilyStatus
@@ -25,6 +25,14 @@ class ActiveFamilyRequiredError(QuestionLoopServiceError):
 
 
 class InvalidRecipientError(QuestionLoopServiceError):
+    pass
+
+
+class RecipientUserNotFoundError(QuestionLoopServiceError):
+    pass
+
+
+class RecipientForbiddenError(QuestionLoopServiceError):
     pass
 
 
@@ -145,18 +153,33 @@ class QuestionLoopService:
         self,
         db: Session,
         *,
-        depth: QuestionDepth,
+        user: User,
+        recipient_user_id: int,
+        depth: QuestionDepth | None,
+        category: str | None,
         limit: int,
     ) -> list[QuestionRecommendation]:
+        recipient_membership = self._recommendation_recipient_membership(
+            db,
+            user=user,
+            recipient_user_id=recipient_user_id,
+        )
+        target_role = UserRole(recipient_membership.member_role.value)
+        statement = select(QuestionRecommendation).where(
+            QuestionRecommendation.status == QuestionRecommendationStatus.ACTIVE,
+            or_(
+                QuestionRecommendation.target_role == target_role,
+                QuestionRecommendation.target_role.is_(None),
+            ),
+        )
+        if depth is not None:
+            statement = statement.where(QuestionRecommendation.depth == depth)
+        if category is not None:
+            statement = statement.where(QuestionRecommendation.category == category)
+
         return list(
             db.scalars(
-                select(QuestionRecommendation)
-                .where(
-                    QuestionRecommendation.depth == depth,
-                    QuestionRecommendation.status == QuestionRecommendationStatus.ACTIVE,
-                )
-                .order_by(func.random())
-                .limit(limit)
+                statement.order_by(func.random()).limit(limit)
             )
         )
 
@@ -171,6 +194,9 @@ class QuestionLoopService:
         recommendation_id: int | None,
     ) -> QuestionSend:
         membership = self._require_active_membership(db, user=sender)
+        recipient_user = db.get(User, recipient_user_id)
+        if recipient_user is None or recipient_user.deleted_at is not None:
+            raise InvalidRecipientError("Recipient is not in the same family")
         recipient_membership = self._active_membership(db, user_id=recipient_user_id)
         if recipient_user_id == sender.id:
             raise InvalidRecipientError("Cannot send a question to yourself")
@@ -193,6 +219,11 @@ class QuestionLoopService:
             )
             if recommendation is None:
                 raise RecommendationNotFoundError("Question recommendation was not found")
+            if not self._recommendation_matches_recipient(
+                recommendation,
+                recipient_membership=recipient_membership,
+            ):
+                raise InvalidRecipientError("Recommendation is not available for this recipient")
             source = QuestionSendSource.RECOMMENDATION
             resolved_depth = recommendation.depth
             resolved_text = recommendation.question_text
@@ -295,6 +326,52 @@ class QuestionLoopService:
         if membership is None:
             raise ActiveFamilyRequiredError("Active family is required")
         return membership
+
+    def _recommendation_recipient_membership(
+        self,
+        db: Session,
+        *,
+        user: User,
+        recipient_user_id: int,
+    ) -> FamilyMember:
+        membership = self._require_active_membership(db, user=user)
+        recipient_user = db.get(User, recipient_user_id)
+        if recipient_user is None or recipient_user.deleted_at is not None:
+            raise RecipientUserNotFoundError("Recipient user was not found")
+
+        recipient_membership = db.scalar(
+            select(FamilyMember)
+            .where(
+                FamilyMember.family_id == membership.family_id,
+                FamilyMember.user_id == recipient_user_id,
+            )
+            .limit(1)
+        )
+        if recipient_membership is None:
+            raise RecipientForbiddenError("Recipient is not in the same family")
+        if recipient_membership.status != FamilyMemberStatus.ACTIVE:
+            raise InvalidRecipientError("Recipient is not an active family member")
+        if recipient_membership.member_role not in (
+            FamilyMemberRole.MOTHER,
+            FamilyMemberRole.FATHER,
+        ):
+            raise InvalidRecipientError("Recipient must be mother or father")
+        return recipient_membership
+
+    @staticmethod
+    def _recommendation_matches_recipient(
+        recommendation: QuestionRecommendation,
+        *,
+        recipient_membership: FamilyMember,
+    ) -> bool:
+        if recommendation.target_role is None:
+            return True
+        if recipient_membership.member_role not in (
+            FamilyMemberRole.MOTHER,
+            FamilyMemberRole.FATHER,
+        ):
+            return False
+        return recommendation.target_role.value == recipient_membership.member_role.value
 
     @staticmethod
     def _active_membership(db: Session, *, user_id: int) -> FamilyMember | None:

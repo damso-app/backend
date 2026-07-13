@@ -612,7 +612,9 @@ Authorization: Bearer <Damso access token>
 
 Query parameters:
 
-- `depth`: `tiny`, `medium`, `deep` 중 하나. 필수.
+- `recipient_user_id`: 추천 질문을 보낼 수신자 사용자 ID. 필수. 서버는 현재 사용자와 같은 활성 가족의 활성 구성원인지 확인하고, `family_members.member_role`이 `mother` 또는 `father`인 경우만 허용한다.
+- `depth`: `tiny`, `medium`, `deep` 중 하나. 선택. 전달하면 추가 필터로 사용한다.
+- `category`: 질문 카테고리. 선택. 전달하면 추가 필터로 사용한다.
 - `limit`: 1~20. 기본값 `3`.
 
 응답:
@@ -624,13 +626,14 @@ Query parameters:
       "recommendationId": 1,
       "questionText": "오늘 가장 많이 웃은 순간은 언제였나요?",
       "depth": "tiny",
-      "category": null
+      "category": null,
+      "targetRole": "mother"
     }
   ]
 }
 ```
 
-`question_recommendations.status = active`인 질문만 depth 기준으로 랜덤 조회한다.
+`question_recommendations.status = active`이고 `target_role`이 DB에서 확인한 수신자 `member_role`과 같거나 `null`인 공통 질문만 반환한다. 존재하지 않는 수신자는 `404`, 같은 활성 가족에 속하지 않는 수신자는 `403`, 수신자가 활성 구성원이 아니거나 `mother`/`father`가 아니면 `400`을 반환한다. 정렬은 기존 랜덤 노출 정책을 유지한다.
 
 ### `POST /api/v1/questions`
 

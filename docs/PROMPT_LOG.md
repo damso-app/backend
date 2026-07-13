@@ -1,5 +1,57 @@
 # Prompt Log
 
+## 2026-07-13 수신자 역할 기반 추천 질문 조회 수정
+
+### 요청 프롬프트 요약
+
+질문 작성 화면에서 자녀가 엄마 또는 아빠를 선택하면 `question_recommendations.target_role`과 공통 질문(`target_role IS NULL`) 기준으로 추천 질문을 반환하도록 기존 추천 조회 API를 확장하도록 요청했다. 프론트가 전달하는 role 문자열은 신뢰하지 않고, `recipient_user_id`로 같은 활성 가족의 활성 구성원인지 검증한 뒤 `family_members.member_role`을 기준으로 조회해야 한다. 기존 일반 인증과 `X-Demo-Mode` 데모 인증 흐름은 수정하지 않는 조건이었다.
+
+### 생성/수정 파일
+
+- `app/models/question_recommendation.py`
+- `app/schemas/question_loop.py`
+- `app/services/question_loop_service.py`
+- `app/api/v1/questions.py`
+- `alembic/versions/20260713_0013_add_question_recommendation_target_role.py`
+- `tests/test_models.py`
+- `tests/test_question_answer_loop.py`
+- `docs/API_DRAFT.md`
+- `docs/DB_SCHEMA.md`
+- `docs/PROMPT_LOG.md`
+
+### 반영 내용
+
+- `QuestionRecommendation.target_role`을 nullable `user_role` enum으로 모델에 반영했다. null은 공통 추천 질문으로 처리한다.
+- `GET /api/v1/questions/recommendations`에 필수 query parameter `recipient_user_id`를 추가하고, 기존 `depth`와 신규 `category`는 추가 필터로 사용하도록 했다.
+- 현재 사용자의 활성 가족을 기준으로 수신자 존재 여부, 같은 가족 여부, 활성 멤버 여부, `mother`/`father` 역할 여부를 검증한다. 존재하지 않는 수신자는 `404`, 다른 가족 수신자는 `403`, 비활성 구성원 또는 자녀 수신자는 `400`으로 매핑했다.
+- 추천 조회는 `status = active`이면서 `target_role = 수신자 member_role` 또는 `target_role IS NULL`인 질문만 반환한다. 기존 랜덤 정렬 정책은 유지했다.
+- 응답 item에 `targetRole`을 추가했다.
+- 추천 ID로 질문을 보낼 때도 추천의 `target_role`이 실제 수신자 역할과 맞거나 공통 추천인 경우만 허용하도록 검증했다.
+- 운영 DB에 이미 컬럼이 있는 상태를 고려해 Alembic migration은 컬럼 존재 여부를 검사한 뒤 없을 때만 추가한다.
+
+### 검증 결과
+
+```bash
+.venv/bin/pytest tests/test_models.py tests/test_question_answer_loop.py
+# 23 passed, 1 warning
+
+.venv/bin/pytest
+# 135 passed, 1 warning
+
+.venv/bin/ruff check .
+# All checks passed!
+
+.venv/bin/alembic upgrade head
+# Running upgrade 20260708_0012 -> 20260713_0013, add question recommendation target role
+
+.venv/bin/alembic current
+# 20260713_0013 (head)
+```
+
+### 프롬프트 변경 여부
+
+AI 질문 생성, 답변 요약, 분석 프롬프트는 변경하지 않았다.
+
 ## 2026-07-08 FastAPI CORS 설정 추가
 
 ### 요청 프롬프트 요약
