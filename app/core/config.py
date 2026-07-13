@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     ai_job_request_timeout_seconds: float = 5.0
     ai_edited_video_upload_url_expire_minutes: int = 120
     ai_callback_token_expire_minutes: int = 120
+    enable_demo_mode: bool = False
+    demo_user_id: int | None = None
 
     @field_validator("cors_origins", mode="before")
     @classmethod
