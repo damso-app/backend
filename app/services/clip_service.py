@@ -2,7 +2,7 @@ from collections import defaultdict
 from datetime import date
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.timezone import to_kst_date
 from app.models.answer import Answer
@@ -39,6 +39,7 @@ class ClipService:
         answers = list(
             db.scalars(
                 select(Answer)
+                .options(selectinload(Answer.user))
                 .where(
                     Answer.family_id == membership.family_id,
                     Answer.deleted_at.is_(None),
@@ -79,6 +80,7 @@ class ClipService:
 
         answer = db.scalar(
             select(Answer)
+            .options(selectinload(Answer.user))
             .where(
                 Answer.id == answer_id,
                 Answer.family_id == membership.family_id,

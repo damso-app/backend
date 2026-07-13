@@ -41,6 +41,8 @@ def get_clip_grid(
                         answerId=answer.id,
                         status=answer.status,
                         thumbnailUrl=service.resolve_thumbnail_url(answer),
+                        answererRole=answer.user.role,
+                        answererName=answer.user.display_name,
                     )
                     for answer in answers
                 ],

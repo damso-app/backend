@@ -3,6 +3,7 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.answer import AnswerStatus
+from app.models.user import UserRole
 
 
 class ClipSchema(BaseModel):
@@ -13,6 +14,8 @@ class ClipGridItem(ClipSchema):
     answer_id: int = Field(alias="answerId")
     status: AnswerStatus
     thumbnail_url: str | None = Field(default=None, alias="thumbnailUrl")
+    answerer_role: UserRole = Field(alias="answererRole")
+    answerer_name: str = Field(alias="answererName")
 
 
 class ClipGridGroup(ClipSchema):
@@ -30,6 +33,8 @@ class ClipDetailResponse(ClipSchema):
     video_url: str | None = Field(default=None, alias="videoUrl")
     video_duration_seconds: int | None = Field(default=None, alias="videoDurationSeconds")
     thumbnail_url: str | None = Field(default=None, alias="thumbnailUrl")
+    answerer_role: UserRole = Field(alias="answererRole")
+    answerer_name: str = Field(alias="answererName")
     transcript: str | None = None
     transcript_segments: list | None = Field(default=None, alias="transcriptSegments")
     title: str | None = None

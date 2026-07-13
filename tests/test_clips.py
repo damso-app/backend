@@ -202,6 +202,8 @@ def test_grid_groups_by_kst_date_and_includes_thumbnail(
                     "answerId": answer_id,
                     "status": "completed",
                     "thumbnailUrl": "signed:gs://damso-videos/thumb.jpg",
+                    "answererRole": "mother",
+                    "answererName": "mother_public_id",
                 }
             ],
         }
@@ -307,6 +309,8 @@ def test_clip_detail_returns_signed_urls(
     assert body["thumbnailUrl"] == "signed:gs://damso-videos/thumb.jpg"
     assert body["title"] == "제목"
     assert body["quote"] == "명대사"
+    assert body["answererRole"] == "mother"
+    assert body["answererName"] == "mother_public_id"
 
 
 def test_clip_detail_not_ready_returns_404(
