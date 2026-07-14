@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, case, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.timezone import today_range_in_kst
 from app.models.family import Family, FamilyStatus
